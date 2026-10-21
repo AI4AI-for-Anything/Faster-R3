@@ -334,11 +334,13 @@ def clip_grad_norm_fsdp2(
 
 
 @contextmanager
-def fsdp2_rollout_context(model: nn.Module, *, retain_unsharded: bool = False):
-    """Gather for rollout, optionally retaining weights for the next training forward.
+def fsdp2_rollout_context(model: nn.Module, *, retain_decoder_weights: bool = False):
+    """Gather for rollout, optionally retaining decoder weights for training.
 
-    With retention, the normal FSDP backward reshards before the optimizer step.
-    Evaluation and exceptional exits still release the gathered weights here.
+    Root and auxiliary groups keep their original lifetime so their buffers can
+    be reused during packing and the reference forward. The normal FSDP backward
+    reshards retained decoders before the optimizer step. Evaluation and
+    exceptional exits release every group here.
     """
     fsdp_modules = [module for module in model.modules() if isinstance(module, FSDPModule)]
     was_training = model.training
@@ -390,8 +392,13 @@ def fsdp2_rollout_context(model: nn.Module, *, retain_unsharded: bool = False):
             for attr, hook_dict in saved_hooks.get(id(module), {}).items():
                 getattr(module, attr).update(hook_dict)
 
-        if not retain_unsharded or not completed:
-            for module in reversed(fsdp_modules):
+        for module in reversed(fsdp_modules):
+            keep_decoder = (
+                retain_decoder_weights
+                and completed
+                and isinstance(module, (Qwen2DecoderLayer, Qwen2MoEDecoderLayer, Qwen2MoTDecoderLayer))
+            )
+            if not keep_decoder:
                 module.reshard()
 
         torch.cuda.empty_cache()

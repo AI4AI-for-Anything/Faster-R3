@@ -1011,7 +1011,7 @@ def main():
         ) for _ in range(2)]
 
         # The policy is unchanged until the ensuing backward/optimizer step.
-        with rollout_controller.context(retain_unsharded=True):
+        with rollout_controller.context(retain_decoder_weights=True):
             if curr_step % training_args.rounds == 0:
                 # Round 1: reasoning stage
                 rollout_buffer.clear()

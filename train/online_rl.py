@@ -997,6 +997,8 @@ def main():
 
         torch.cuda.synchronize()
         start_time = time.time()
+        # Previous-step gradients are no longer needed during rollout.
+        optimizer.zero_grad()
         group_seed = (policy_group_id + 1) * training_args.total_steps + curr_step
         gen_seed = (dist.get_rank() + 1) * training_args.total_steps + curr_step
         group_generator = torch.Generator(device="cuda")
@@ -1150,7 +1152,6 @@ def main():
             "img_prob_ratio_min": [],
         }
         fsdp_model.train()
-        optimizer.zero_grad()
 
         # NOTE: We collect all batches to ensure synchronized iteration counts across ranks.
         # This uses more memory but avoids doing the expensive pack_iterator work twice.

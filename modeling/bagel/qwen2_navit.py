@@ -324,6 +324,55 @@ def _static_kv_host_meta(past_key_values, query_lens, selected_cache_indices):
     return meta
 
 
+def _static_kv_packing_meta(past_key_values, query_lens, selected_cache_indices, device):
+    """Reuse integer packing indexes while the existing host metadata is valid.
+
+    No K/V values are cached here: each layer and flow step still reads its
+    current tensors. Length updates invalidate this plan together with _host_meta.
+    """
+    meta = _static_kv_host_meta(past_key_values, query_lens, selected_cache_indices)
+    if meta['max_total'] > past_key_values.max_len:
+        raise RuntimeError(
+            f"StaticKVCache overflow: need {meta['max_total']} tokens, "
+            f"but max_len={past_key_values.max_len}"
+        )
+    if 'packing' in meta:
+        return meta, meta['packing']
+
+    num_seqs = len(query_lens)
+    cache_batch_idx = _normalize_static_cache_indices(selected_cache_indices, device)
+    cache_indices = cache_batch_idx.long() if cache_batch_idx is not None else torch.arange(num_seqs, device=device)
+    effective_seqlens = (
+        past_key_values.seq_lens[cache_indices]
+        if cache_batch_idx is not None
+        else past_key_values.seq_lens
+    )
+    total_kv_lens = effective_seqlens + query_lens
+    cu_kv = torch.nn.functional.pad(torch.cumsum(total_kv_lens, dim=0), (1, 0))
+    packing = dict(
+        cache_batch_idx=cache_batch_idx, cache_indices=cache_indices,
+        effective_seqlens=effective_seqlens, total_kv_lens=total_kv_lens,
+        cu_seqlens_q=torch.nn.functional.pad(torch.cumsum(query_lens, dim=0), (1, 0)).to(torch.int32),
+        cu_seqlens_k=cu_kv.to(torch.int32),
+    )
+    if meta['sum_eff'] > 0:
+        max_past = meta['max_eff']
+        past_pos = torch.arange(max_past, device=device).unsqueeze(0).expand(num_seqs, -1)
+        past_mask = past_pos < effective_seqlens.unsqueeze(1)
+        batch_idx = cache_indices.unsqueeze(1).expand_as(past_pos)
+        past_dest = cu_kv[:-1].unsqueeze(1) + past_pos
+        packing.update(past_batch=batch_idx[past_mask], past_pos=past_pos[past_mask],
+                       past_dest=past_dest[past_mask])
+
+    max_new = meta['max_q']
+    new_pos = torch.arange(max_new, device=device).unsqueeze(0).expand(num_seqs, -1)
+    new_mask = new_pos < query_lens.unsqueeze(1)
+    new_dest = (cu_kv[:-1] + effective_seqlens).unsqueeze(1) + new_pos
+    packing['new_dest'] = new_dest[new_mask]
+    meta['packing'] = packing
+    return meta, packing
+
+
 def _merge_static_kv_prefix_and_query(
     packed_key_states,
     packed_value_states,
@@ -332,51 +381,25 @@ def _merge_static_kv_prefix_and_query(
     layer_idx,
     selected_cache_indices=None,
 ):
-    num_seqs = len(query_lens)
-    device = packed_key_states.device
-    cache_batch_idx = _normalize_static_cache_indices(selected_cache_indices, device)
-    cache_indices = cache_batch_idx.long() if cache_batch_idx is not None else torch.arange(num_seqs, device=device)
-
-    effective_seqlens = (
-        past_key_values.seq_lens[cache_indices]
-        if cache_batch_idx is not None
-        else past_key_values.seq_lens
+    meta, packing = _static_kv_packing_meta(
+        past_key_values, query_lens, selected_cache_indices, packed_key_states.device,
     )
-    total_kv_lens = effective_seqlens + query_lens
-    meta = _static_kv_host_meta(past_key_values, query_lens, selected_cache_indices)
-    if meta['max_total'] > past_key_values.max_len:
-        raise RuntimeError(
-            f"StaticKVCache overflow: need {meta['max_total']} tokens, "
-            f"but max_len={past_key_values.max_len}"
-        )
-
     k_cache = past_key_values.key_cache[layer_idx]
     v_cache = past_key_values.value_cache[layer_idx]
     total_kv = meta['sum_total']
     merged_k = packed_key_states.new_empty(total_kv, packed_key_states.shape[-2], packed_key_states.shape[-1])
     merged_v = packed_value_states.new_empty(total_kv, packed_value_states.shape[-2], packed_value_states.shape[-1])
-    cu_kv = torch.nn.functional.pad(torch.cumsum(total_kv_lens, dim=0), (1, 0))
 
-    total_past = meta['sum_eff']
-    if total_past > 0:
-        max_past = meta['max_eff']
-        past_pos = torch.arange(max_past, device=device).unsqueeze(0).expand(num_seqs, -1)
-        past_mask = past_pos < effective_seqlens.unsqueeze(1)
-        batch_idx = cache_indices.unsqueeze(1).expand_as(past_pos)
-        past_k = k_cache[batch_idx[past_mask], past_pos[past_mask]]
-        past_v = v_cache[batch_idx[past_mask], past_pos[past_mask]]
-        past_dest = cu_kv[:-1].unsqueeze(1) + past_pos
-        merged_k[past_dest[past_mask]] = past_k
-        merged_v[past_dest[past_mask]] = past_v
+    if meta['sum_eff'] > 0:
+        past_k = k_cache[packing['past_batch'], packing['past_pos']]
+        past_v = v_cache[packing['past_batch'], packing['past_pos']]
+        merged_k[packing['past_dest']] = past_k
+        merged_v[packing['past_dest']] = past_v
 
-    max_new = meta['max_q']
-    new_pos = torch.arange(max_new, device=device).unsqueeze(0).expand(num_seqs, -1)
-    new_mask = new_pos < query_lens.unsqueeze(1)
-    new_dest = (cu_kv[:-1] + effective_seqlens).unsqueeze(1) + new_pos
-    merged_k[new_dest[new_mask]] = packed_key_states
-    merged_v[new_dest[new_mask]] = packed_value_states
-
-    return merged_k, merged_v, total_kv_lens, effective_seqlens, cache_indices, cache_batch_idx
+    merged_k[packing['new_dest']] = packed_key_states
+    merged_v[packing['new_dest']] = packed_value_states
+    return (merged_k, merged_v, packing['total_kv_lens'], packing['effective_seqlens'],
+            packing['cache_indices'], packing['cache_batch_idx'])
 
 
 def _static_kv_cache_attention(
@@ -483,8 +506,8 @@ def _static_kv_cache_readonly_attention(
         layer_idx,
         selected_cache_indices=selected_cache_indices,
     )
-    cu_seqlens_q = torch.nn.functional.pad(torch.cumsum(query_lens, dim=0), (1, 0)).to(torch.int32)
-    cu_seqlens_k = torch.nn.functional.pad(torch.cumsum(total_kv_lens, dim=0), (1, 0)).to(torch.int32)
+    cu_seqlens_q = meta['packing']['cu_seqlens_q']
+    cu_seqlens_k = meta['packing']['cu_seqlens_k']
     return flash_attn_varlen_func(
         q=packed_query_states,
         k=merged_k,

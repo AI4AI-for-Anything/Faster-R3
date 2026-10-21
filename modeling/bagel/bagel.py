@@ -1301,12 +1301,26 @@ class Bagel(PreTrainedModel):
                 self.language_model, past_key_values, {'mode': 'und'} if self.use_moe else {},
             )
         active_sequences_original_indices = torch.arange(batch_size, device=curr_tokens.device)
+        active_indices_host = list(range(batch_size))
+        probability_batches = []
         tqdm_iter = tqdm(range(max_length+1), desc="Thinking...", disable=not (dist.is_initialized() and dist.get_rank() == 0)) # TODO: add one
         for step in tqdm_iter:
             if not active_sequences_original_indices.numel() > 0:
                 break
 
             active_curr_tokens = curr_tokens[active_sequences_original_indices]
+            # Only current tokens control the next active batch. Read them
+            # before launching this iteration's backbone, then prepare the
+            # integer indexes without a post-sampling Boolean-index sync.
+            active_tokens_host = active_curr_tokens.tolist()
+            continuing_positions_host = [
+                i for i, token in enumerate(active_tokens_host) if token != end_token_id
+            ]
+            continuing_indices_host = [active_indices_host[i] for i in continuing_positions_host]
+            continuing_positions = torch.tensor(
+                continuing_positions_host, dtype=torch.long, device=curr_tokens.device,
+            )
+            continuing_original_indices = active_sequences_original_indices[continuing_positions]
             active_packed_query_position_ids = packed_query_position_ids[active_sequences_original_indices]
 
             packed_text_embedding = self.language_model.model.embed_tokens(active_curr_tokens)
@@ -1388,32 +1402,33 @@ class Bagel(PreTrainedModel):
             raw_probs = F.softmax(pred_logits.float(), dim=-1)
             next_tokens_probs = raw_probs.gather(-1, next_tokens.unsqueeze(-1)).squeeze(-1)
 
-            still_active_mask_for_next_step = torch.ones_like(active_sequences_original_indices, dtype=torch.bool)
-
-            # Read each batch once instead of synchronizing every scalar. Active
-            # indices are unique, so later curr_tokens writes cannot change the
-            # current token used by another sequence's termination check.
-            active_indices_host = active_sequences_original_indices.tolist()
-            active_tokens_host = active_curr_tokens.tolist()
-            next_probs_host = next_tokens_probs.tolist()
+            # These gather outputs are independent eager tensors, not mutable
+            # graph outputs. Their host values are needed only when returning.
+            probability_batches.append((
+                next_tokens_probs, continuing_positions_host, continuing_indices_host,
+            ))
             for i, original_batch_idx in enumerate(active_indices_host):
                 generated_sequence[original_batch_idx].append(active_tokens_host[i])
 
-                if active_tokens_host[i] == end_token_id:
-                    still_active_mask_for_next_step[i] = False
-                else:
-                    if step == max_length - 1:
-                        next_tokens[i] = end_token_id
-                    curr_tokens[original_batch_idx] = next_tokens[i]
-                    generated_probs[original_batch_idx].append(next_probs_host[i])
-
-            continuing_original_indices = active_sequences_original_indices[still_active_mask_for_next_step]
-            if continuing_original_indices.numel() > 0:
+            if continuing_positions_host:
+                # Unique indexes make these integer writes independent. Keep
+                # the probability of the sampled token even when forcing EOS.
+                if step == max_length - 1:
+                    next_tokens[continuing_positions] = end_token_id
+                curr_tokens[continuing_original_indices] = next_tokens[continuing_positions]
                 if not use_static_cache:
                     key_values_lens[continuing_original_indices] += 1
                 packed_query_position_ids[continuing_original_indices] += 1
 
             active_sequences_original_indices = continuing_original_indices
+            active_indices_host = continuing_indices_host
+        if probability_batches:
+            probabilities_host = torch.cat([batch[0] for batch in probability_batches]).tolist()
+            offset = 0
+            for probabilities, positions, original_indices in probability_batches:
+                for position, original_batch_idx in zip(positions, original_indices):
+                    generated_probs[original_batch_idx].append(probabilities_host[offset + position])
+                offset += probabilities.numel()
         if decode_graph is not None:
             rank = dist.get_rank() if dist.is_initialized() else 0
             print(f"[static-text-graph rank={rank}] eager={decode_graph.eager_calls} "

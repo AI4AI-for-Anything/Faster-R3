@@ -1390,17 +1390,22 @@ class Bagel(PreTrainedModel):
 
             still_active_mask_for_next_step = torch.ones_like(active_sequences_original_indices, dtype=torch.bool)
 
-            for i, original_batch_idx_tensor in enumerate(active_sequences_original_indices.split(1)):
-                original_batch_idx = original_batch_idx_tensor.item()
-                generated_sequence[original_batch_idx].append(active_curr_tokens[i].item())
+            # Read each batch once instead of synchronizing every scalar. Active
+            # indices are unique, so later curr_tokens writes cannot change the
+            # current token used by another sequence's termination check.
+            active_indices_host = active_sequences_original_indices.tolist()
+            active_tokens_host = active_curr_tokens.tolist()
+            next_probs_host = next_tokens_probs.tolist()
+            for i, original_batch_idx in enumerate(active_indices_host):
+                generated_sequence[original_batch_idx].append(active_tokens_host[i])
 
-                if curr_tokens[original_batch_idx] == end_token_id:
+                if active_tokens_host[i] == end_token_id:
                     still_active_mask_for_next_step[i] = False
                 else:
                     if step == max_length - 1:
                         next_tokens[i] = end_token_id
                     curr_tokens[original_batch_idx] = next_tokens[i]
-                    generated_probs[original_batch_idx].append(next_tokens_probs[i].item())
+                    generated_probs[original_batch_idx].append(next_probs_host[i])
 
             continuing_original_indices = active_sequences_original_indices[still_active_mask_for_next_step]
             if continuing_original_indices.numel() > 0:

@@ -23,6 +23,7 @@ from data.data_utils import (
 from modeling.diffusion.sde_sampler import SDESampler
 from .qwen2_navit import NaiveCache, Qwen2ForCausalLM, NaiveCacheMultiSeq, StaticKVCache
 from .modeling_utils import MLPconnector, TimestepEmbedder, PositionEmbedding
+from .static_text_graph import StaticTextGraph
 
 
 class BagelConfig(PretrainedConfig):
@@ -1288,6 +1289,14 @@ class Bagel(PreTrainedModel):
             raise ValueError(f"past_key_values.num_seqs ({past_key_values.num_seqs}) does not match batch_size ({batch_size})")
 
         use_static_cache = isinstance(past_key_values, StaticKVCache)
+        # Graph only the RNG-free backbone. Dynamic RoPE can change its buffers
+        # from host-side position checks, so retain its ordinary eager path.
+        decode_graph = None
+        if (use_static_cache and curr_tokens.is_cuda and not self.language_model.training
+                and 'dynamic' not in self.language_model.model.rotary_emb.rope_type):
+            decode_graph = StaticTextGraph(
+                self.language_model, past_key_values, {'mode': 'und'} if self.use_moe else {},
+            )
         active_sequences_original_indices = torch.arange(batch_size, device=curr_tokens.device)
         tqdm_iter = tqdm(range(max_length+1), desc="Thinking...", disable=not (dist.is_initialized() and dist.get_rank() == 0)) # TODO: add one
         for step in tqdm_iter:
@@ -1305,19 +1314,25 @@ class Bagel(PreTrainedModel):
                 extra_inputs["mode"] = "und"
 
             if use_static_cache:
-                output = self.language_model.forward_inference(
-                    packed_query_sequence=packed_text_embedding,
-                    query_lens=query_lens_for_model,
-                    packed_query_position_ids=active_packed_query_position_ids,
-                    packed_query_indexes=None,
-                    past_key_values=past_key_values,
-                    key_values_lens=None,
-                    packed_key_value_indexes=None,
-                    update_past_key_values=True,
-                    is_causal=True,
-                    selected_cache_indices=active_sequences_original_indices,
-                    **extra_inputs,
-                )
+                if decode_graph is not None:
+                    output = decode_graph(
+                        packed_text_embedding, query_lens_for_model,
+                        active_packed_query_position_ids, active_sequences_original_indices,
+                    )
+                else:
+                    output = self.language_model.forward_inference(
+                        packed_query_sequence=packed_text_embedding,
+                        query_lens=query_lens_for_model,
+                        packed_query_position_ids=active_packed_query_position_ids,
+                        packed_query_indexes=None,
+                        past_key_values=past_key_values,
+                        key_values_lens=None,
+                        packed_key_value_indexes=None,
+                        update_past_key_values=True,
+                        is_causal=True,
+                        selected_cache_indices=active_sequences_original_indices,
+                        **extra_inputs,
+                    )
                 past_key_values = output.past_key_values
                 past_key_values.advance_seq_lens(1, active_sequences_original_indices)
             else:
@@ -1391,6 +1406,10 @@ class Bagel(PreTrainedModel):
                 packed_query_position_ids[continuing_original_indices] += 1
 
             active_sequences_original_indices = continuing_original_indices
+        if decode_graph is not None:
+            rank = dist.get_rank() if dist.is_initialized() else 0
+            print(f"[static-text-graph rank={rank}] eager={decode_graph.eager_calls} "
+                  f"captures={decode_graph.captures} replays={decode_graph.replays}", flush=True)
         return generated_sequence, generated_probs, past_key_values
      
     # for evaluation

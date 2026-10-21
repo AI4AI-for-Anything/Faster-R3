@@ -274,12 +274,17 @@ class StaticKVCache:
         self.key_cache = torch.zeros(shape, dtype=dtype, device=device)
         self.value_cache = torch.zeros(shape, dtype=dtype, device=device)
         self.seq_lens = torch.zeros(batch_size, dtype=torch.int32, device=device)
+        self._host_meta = None
 
     @property
     def num_seqs(self):
         return self.batch_size
 
+    def invalidate_host_meta(self):
+        self._host_meta = None
+
     def advance_seq_lens(self, amount, indices=None):
+        self._host_meta = None
         if indices is None:
             self.seq_lens += amount
         else:
@@ -298,6 +303,25 @@ def _normalize_static_cache_indices(selected_cache_indices, device):
     if isinstance(selected_cache_indices, torch.Tensor):
         return selected_cache_indices.to(device=device, dtype=torch.int32)
     return torch.tensor(selected_cache_indices, dtype=torch.int32, device=device)
+
+
+def _static_kv_host_meta(past_key_values, query_lens, selected_cache_indices):
+    """Host copies of the per-forward lengths every layer needs, read with one device->host copy per forward instead
+    of several .item() syncs per layer. Cached on the cache object for the (query_lens, selected_cache_indices) objects
+    of the current forward (strong references are held, so identity is unambiguous); every seq_lens writer resets it."""
+    cached = past_key_values._host_meta
+    if cached is not None and cached[0] is query_lens and cached[1] is selected_cache_indices:
+        return cached[2]
+    cache_batch_idx = _normalize_static_cache_indices(selected_cache_indices, past_key_values.seq_lens.device)
+    effective = past_key_values.seq_lens[cache_batch_idx.long()] if cache_batch_idx is not None else past_key_values.seq_lens
+    num = len(query_lens)
+    host = torch.cat([effective.to(torch.int64), query_lens.to(device=effective.device, dtype=torch.int64)]).tolist()
+    eff, q = host[:num], host[num:]
+    total = [e + x for e, x in zip(eff, q)]
+    meta = dict(q=q, max_q=max(q), uniform_q=all(x == q[0] for x in q), max_total=max(total), sum_total=sum(total),
+                sum_eff=sum(eff), max_eff=max(eff))
+    past_key_values._host_meta = (query_lens, selected_cache_indices, meta)
+    return meta
 
 
 def _merge_static_kv_prefix_and_query(
@@ -319,22 +343,23 @@ def _merge_static_kv_prefix_and_query(
         else past_key_values.seq_lens
     )
     total_kv_lens = effective_seqlens + query_lens
-    if total_kv_lens.max().item() > past_key_values.max_len:
+    meta = _static_kv_host_meta(past_key_values, query_lens, selected_cache_indices)
+    if meta['max_total'] > past_key_values.max_len:
         raise RuntimeError(
-            f"StaticKVCache overflow: need {total_kv_lens.max().item()} tokens, "
+            f"StaticKVCache overflow: need {meta['max_total']} tokens, "
             f"but max_len={past_key_values.max_len}"
         )
 
     k_cache = past_key_values.key_cache[layer_idx]
     v_cache = past_key_values.value_cache[layer_idx]
-    total_kv = total_kv_lens.sum().item()
+    total_kv = meta['sum_total']
     merged_k = packed_key_states.new_empty(total_kv, packed_key_states.shape[-2], packed_key_states.shape[-1])
     merged_v = packed_value_states.new_empty(total_kv, packed_value_states.shape[-2], packed_value_states.shape[-1])
     cu_kv = torch.nn.functional.pad(torch.cumsum(total_kv_lens, dim=0), (1, 0))
 
-    total_past = effective_seqlens.sum().item()
+    total_past = meta['sum_eff']
     if total_past > 0:
-        max_past = effective_seqlens.max().item()
+        max_past = meta['max_eff']
         past_pos = torch.arange(max_past, device=device).unsqueeze(0).expand(num_seqs, -1)
         past_mask = past_pos < effective_seqlens.unsqueeze(1)
         batch_idx = cache_indices.unsqueeze(1).expand_as(past_pos)
@@ -344,7 +369,7 @@ def _merge_static_kv_prefix_and_query(
         merged_k[past_dest[past_mask]] = past_k
         merged_v[past_dest[past_mask]] = past_v
 
-    max_new = query_lens.max().item()
+    max_new = meta['max_q']
     new_pos = torch.arange(max_new, device=device).unsqueeze(0).expand(num_seqs, -1)
     new_mask = new_pos < query_lens.unsqueeze(1)
     new_dest = (cu_kv[:-1] + effective_seqlens).unsqueeze(1) + new_pos
@@ -377,17 +402,18 @@ def _static_kv_cache_attention(
         if cache_batch_idx is not None
         else past_key_values.seq_lens
     )
-    if (effective_seqlens + query_lens).max().item() > past_key_values.max_len:
+    meta = _static_kv_host_meta(past_key_values, query_lens, selected_cache_indices)
+    if meta['max_total'] > past_key_values.max_len:
         raise RuntimeError(
-            f"StaticKVCache overflow: need {(effective_seqlens + query_lens).max().item()} tokens, "
+            f"StaticKVCache overflow: need {meta['max_total']} tokens, "
             f"but max_len={past_key_values.max_len}"
         )
 
     k_cache = past_key_values.key_cache[layer_idx]
     v_cache = past_key_values.value_cache[layer_idx]
 
-    if num_seqs == 1 or (query_lens == query_lens[0]).all():
-        seqlen_q = query_lens[0].item()
+    if num_seqs == 1 or meta['uniform_q']:
+        seqlen_q = meta['q'][0]
         q = packed_query_states.view(num_seqs, seqlen_q, num_heads, head_dim)
         k_new = packed_key_states.view(num_seqs, seqlen_q, num_kv_heads, head_dim)
         v_new = packed_value_states.view(num_seqs, seqlen_q, num_kv_heads, head_dim)
@@ -419,12 +445,12 @@ def _static_kv_cache_attention(
         v=merged_v,
         cu_seqlens_q=cu_seqlens_q,
         cu_seqlens_k=cu_seqlens_k,
-        max_seqlen_q=query_lens.max().item(),
-        max_seqlen_k=total_kv_lens.max().item(),
+        max_seqlen_q=meta['max_q'],
+        max_seqlen_k=meta['max_total'],
         causal=is_causal,
     ).reshape(-1, hidden_size)
 
-    max_new = query_lens.max().item()
+    max_new = meta['max_q']
     write_pos = torch.arange(max_new, device=device).unsqueeze(0).expand(num_seqs, -1)
     write_mask = write_pos < query_lens.unsqueeze(1)
     write_batch = cache_indices.unsqueeze(1).expand_as(write_pos)
@@ -448,6 +474,7 @@ def _static_kv_cache_readonly_attention(
     selected_cache_indices=None,
     is_causal=False,
 ):
+    meta = _static_kv_host_meta(past_key_values, query_lens, selected_cache_indices)
     merged_k, merged_v, total_kv_lens, _, _, _ = _merge_static_kv_prefix_and_query(
         packed_key_states,
         packed_value_states,
@@ -464,8 +491,8 @@ def _static_kv_cache_readonly_attention(
         v=merged_v,
         cu_seqlens_q=cu_seqlens_q,
         cu_seqlens_k=cu_seqlens_k,
-        max_seqlen_q=query_lens.max().item(),
-        max_seqlen_k=total_kv_lens.max().item(),
+        max_seqlen_q=meta['max_q'],
+        max_seqlen_k=meta['max_total'],
         causal=is_causal,
     ).reshape(-1, hidden_size)
 

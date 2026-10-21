@@ -250,6 +250,7 @@ class MultiRoundRolloutController:
             past_key_values.seq_lens[:] = torch.tensor(
                 kv_lens, dtype=torch.int32, device=past_key_values.seq_lens.device
             )
+            past_key_values.invalidate_host_meta()
         return gen_context
 
     @torch.no_grad()
@@ -293,6 +294,7 @@ class MultiRoundRolloutController:
             past_key_values.seq_lens[:] = torch.tensor(
                 kv_lens, dtype=torch.int32, device=past_key_values.seq_lens.device
             )
+            past_key_values.invalidate_host_meta()
         
         return gen_context
 

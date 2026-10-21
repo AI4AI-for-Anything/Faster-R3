@@ -712,7 +712,8 @@ class Bagel(PreTrainedModel):
 
         for i, t in enumerate(timesteps):
 
-            timestep = torch.tensor([t] * x_t.shape[0], device=x_t.device)
+            # Materialize identical values without converting the CUDA scalar per token.
+            timestep = t.expand(x_t.shape[0]).clone(memory_format=torch.contiguous_format)
             if t > cfg_interval[0] and t <= cfg_interval[1]:
                 cfg_text_scale_ = cfg_text_scale
                 cfg_img_scale_ = cfg_img_scale
@@ -805,7 +806,8 @@ class Bagel(PreTrainedModel):
 
         for i, t in enumerate(timesteps):
 
-            timestep = torch.tensor([t] * x_t.shape[0], device=x_t.device)
+            # Materialize identical values without converting the CUDA scalar per token.
+            timestep = t.expand(x_t.shape[0]).clone(memory_format=torch.contiguous_format)
             if t > cfg_interval[0] and t <= cfg_interval[1]:
                 cfg_text_scale_ = cfg_text_scale
                 cfg_img_scale_ = cfg_img_scale
@@ -909,7 +911,8 @@ class Bagel(PreTrainedModel):
             if sde_timesteps_idx is not None and i == sde_timesteps_idx[0]:
                 latents.append(x_t)
 
-            timestep = torch.tensor([t] * x_t.shape[0], device=x_t.device)
+            # Materialize identical values without converting the CUDA scalar per token.
+            timestep = t.expand(x_t.shape[0]).clone(memory_format=torch.contiguous_format)
             if t > cfg_interval[0] and t <= cfg_interval[1]:
                 cfg_text_scale_ = cfg_text_scale
                 cfg_img_scale_ = cfg_img_scale

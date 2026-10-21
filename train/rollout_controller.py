@@ -94,14 +94,14 @@ class MultiRoundRolloutController:
 
     
     @contextmanager
-    def context(self):
+    def context(self, *, retain_unsharded: bool = False):
         torch.cuda.empty_cache()
         self.model.eval()
         if isinstance(self.model, FSDP):
             with FSDP.summon_full_params(self.model, recurse=False, writeback=False):
                 yield
         elif isinstance(self.model, FSDPModule):
-            with fsdp2_rollout_context(self.model):
+            with fsdp2_rollout_context(self.model, retain_unsharded=retain_unsharded):
                 yield
         else:
             yield

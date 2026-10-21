@@ -1010,7 +1010,8 @@ def main():
             num_image_tokens, patch_latent_dim, dtype=torch.bfloat16, generator=group_generator, device="cuda"
         ) for _ in range(2)]
 
-        with rollout_controller.context():
+        # The policy is unchanged until the ensuing backward/optimizer step.
+        with rollout_controller.context(retain_unsharded=True):
             if curr_step % training_args.rounds == 0:
                 # Round 1: reasoning stage
                 rollout_buffer.clear()

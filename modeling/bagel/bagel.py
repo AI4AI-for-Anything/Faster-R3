@@ -24,6 +24,7 @@ from modeling.diffusion.sde_sampler import SDESampler
 from .qwen2_navit import NaiveCache, Qwen2ForCausalLM, NaiveCacheMultiSeq, StaticKVCache
 from .modeling_utils import MLPconnector, TimestepEmbedder, PositionEmbedding
 from .static_text_graph import StaticTextGraph
+from .static_text_sampling_graph import StaticTextSamplingGraph
 
 
 class BagelConfig(PretrainedConfig):
@@ -1301,6 +1302,12 @@ class Bagel(PreTrainedModel):
                 self.language_model, past_key_values, {'mode': 'und'} if self.use_moe else {},
             )
         active_sequences_original_indices = torch.arange(batch_size, device=curr_tokens.device)
+        sampling_graph = None
+        if (use_static_cache and curr_tokens.is_cuda and not self.language_model.training
+                and (generator is None or generator.device.type == 'cuda')):
+            sampling_graph = StaticTextSamplingGraph(
+                self, do_sample, temperature, topk, top_p, generator,
+            )
         tqdm_iter = tqdm(range(max_length+1), desc="Thinking...", disable=not (dist.is_initialized() and dist.get_rank() == 0)) # TODO: add one
         for step in tqdm_iter:
             if not active_sequences_original_indices.numel() > 0:
@@ -1373,20 +1380,23 @@ class Bagel(PreTrainedModel):
                 )
             past_key_values = output.past_key_values
 
-            pred_logits = self.language_model.lm_head(output.packed_query_sequence)
-
-            if do_sample:
-                next_tokens, _ = self._sample_next_token(
-                    pred_logits,
-                    temperature=temperature,
-                    topk=topk,
-                    top_p=top_p,
-                    generator=generator,
-                )
+            if sampling_graph is not None:
+                next_tokens, next_tokens_probs = sampling_graph(output.packed_query_sequence)
             else:
-                next_tokens = torch.argmax(pred_logits, dim=-1)
-            raw_probs = F.softmax(pred_logits.float(), dim=-1)
-            next_tokens_probs = raw_probs.gather(-1, next_tokens.unsqueeze(-1)).squeeze(-1)
+                pred_logits = self.language_model.lm_head(output.packed_query_sequence)
+
+                if do_sample:
+                    next_tokens, _ = self._sample_next_token(
+                        pred_logits,
+                        temperature=temperature,
+                        topk=topk,
+                        top_p=top_p,
+                        generator=generator,
+                    )
+                else:
+                    next_tokens = torch.argmax(pred_logits, dim=-1)
+                raw_probs = F.softmax(pred_logits.float(), dim=-1)
+                next_tokens_probs = raw_probs.gather(-1, next_tokens.unsqueeze(-1)).squeeze(-1)
 
             still_active_mask_for_next_step = torch.ones_like(active_sequences_original_indices, dtype=torch.bool)
 
@@ -1418,6 +1428,10 @@ class Bagel(PreTrainedModel):
             rank = dist.get_rank() if dist.is_initialized() else 0
             print(f"[static-text-graph rank={rank}] eager={decode_graph.eager_calls} "
                   f"captures={decode_graph.captures} replays={decode_graph.replays}", flush=True)
+        if sampling_graph is not None:
+            rank = dist.get_rank() if dist.is_initialized() else 0
+            print(f"[static-text-sampling-graph rank={rank}] eager={sampling_graph.eager_calls} "
+                  f"captures={sampling_graph.captures} replays={sampling_graph.replays}", flush=True)
         return generated_sequence, generated_probs, past_key_values
      
     # for evaluation

@@ -724,6 +724,23 @@ class PackedAttention(Qwen2Attention):
         return packed_attn_output, past_key_values
 
 
+def _mot_inference_layout(sequence, text_indexes, vae_indexes):
+    """Return an expert permutation only for a complete, disjoint partition."""
+    indexes = (text_indexes, vae_indexes)
+    if any(index.ndim != 1 or index.dtype != torch.long or
+           index.device != sequence.device for index in indexes):
+        return None
+    if sum(index.numel() for index in indexes) != sequence.shape[0]:
+        return None
+    order = torch.cat(indexes)
+    sorted_indexes, inverse = order.sort()
+    if not torch.equal(sorted_indexes, torch.arange(
+        sequence.shape[0], device=sequence.device, dtype=order.dtype,
+    )):
+        return None
+    return text_indexes.numel(), order, inverse
+
+
 class PackedAttentionMoT(Qwen2Attention):
     def __init__(self, config, layer_idx: Optional[int] = None):
         super().__init__(config, layer_idx)
@@ -858,6 +875,7 @@ class PackedAttentionMoT(Qwen2Attention):
         packed_vae_token_indexes=None,
         packed_text_indexes=None,
         selected_cache_indices: Optional[List[int]] = None,
+        mot_inference_layout=None,
     ):
         if mode == 'und':
             packed_query_states = self.q_proj(packed_query_sequence).view(-1, self.num_heads, self.head_dim)
@@ -865,6 +883,37 @@ class PackedAttentionMoT(Qwen2Attention):
             packed_value_states = self.v_proj(packed_query_sequence).view(-1, self.num_key_value_heads, self.head_dim)
             packed_query_states = self.q_norm(packed_query_states)
             packed_key_states = self.k_norm(packed_key_states)
+        elif mode == 'gen' and mot_inference_layout is not None:
+            text_count, _, inverse = mot_inference_layout
+            packed_query_sequence = packed_query_sequence.to(torch.bfloat16)
+            text_sequence = packed_query_sequence[:text_count]
+            vae_sequence = packed_query_sequence[text_count:]
+            # Keep the original projection order and BF16 store boundaries.
+            packed_query_states = torch.cat((
+                self.q_proj(text_sequence).to(torch.bfloat16),
+                self.q_proj_moe_gen(vae_sequence).to(torch.bfloat16),
+            )).view(-1, self.num_heads, self.head_dim)
+            packed_key_states = torch.cat((
+                self.k_proj(text_sequence).to(torch.bfloat16),
+                self.k_proj_moe_gen(vae_sequence).to(torch.bfloat16),
+            )).view(-1, self.num_key_value_heads, self.head_dim)
+            packed_value_states = torch.cat((
+                self.v_proj(text_sequence).to(torch.bfloat16),
+                self.v_proj_moe_gen(vae_sequence).to(torch.bfloat16),
+            )).view(-1, self.num_key_value_heads, self.head_dim)
+
+            packed_query_states = packed_query_states.to(torch.float32)
+            packed_query_states = torch.cat((
+                self.q_norm(packed_query_states[:text_count]).to(torch.float32),
+                self.q_norm_moe_gen(packed_query_states[text_count:]).to(torch.float32),
+            ))[inverse]
+            packed_key_states = packed_key_states.to(torch.float32)
+            packed_key_states = torch.cat((
+                self.k_norm(packed_key_states[:text_count]).to(torch.float32),
+                self.k_norm_moe_gen(packed_key_states[text_count:]).to(torch.float32),
+            ))[inverse]
+            # RoPE, attention and cache packing retain the original token order.
+            packed_value_states = packed_value_states[inverse]
         elif mode == 'gen':
             packed_query_sequence = packed_query_sequence.to(torch.bfloat16)
             packed_query_states = packed_query_sequence.new_zeros((packed_query_sequence.shape[0], self.num_heads * self.head_dim))
@@ -936,6 +985,11 @@ class PackedAttentionMoT(Qwen2Attention):
                 )
             if mode == 'und':
                 packed_attn_output = self.o_proj(packed_attn_output)
+            elif mode == 'gen' and mot_inference_layout is not None:
+                packed_attn_output = torch.cat((
+                    self.o_proj(packed_attn_output[packed_text_indexes]).to(packed_attn_output.dtype),
+                    self.o_proj_moe_gen(packed_attn_output[packed_vae_token_indexes]).to(packed_attn_output.dtype),
+                ))
             elif mode == 'gen':
                 packed_attn_output[packed_text_indexes] = self.o_proj(packed_attn_output[packed_text_indexes])
                 packed_attn_output[packed_vae_token_indexes] = self.o_proj_moe_gen(packed_attn_output[packed_vae_token_indexes])
@@ -986,6 +1040,11 @@ class PackedAttentionMoT(Qwen2Attention):
         packed_attn_output = packed_attn_output.reshape(-1, self.hidden_size)
         if mode == 'und':
             packed_attn_output = self.o_proj(packed_attn_output)
+        elif mode == 'gen' and mot_inference_layout is not None:
+            packed_attn_output = torch.cat((
+                self.o_proj(packed_attn_output[packed_text_indexes]).to(packed_attn_output.dtype),
+                self.o_proj_moe_gen(packed_attn_output[packed_vae_token_indexes]).to(packed_attn_output.dtype),
+            ))
         elif mode == 'gen':
             packed_attn_output[packed_text_indexes] = self.o_proj(packed_attn_output[packed_text_indexes])
             packed_attn_output[packed_vae_token_indexes] = self.o_proj_moe_gen(packed_attn_output[packed_vae_token_indexes])
@@ -1176,11 +1235,18 @@ class Qwen2MoTDecoderLayer(nn.Module):
         packed_vae_token_indexes=None,
         packed_text_indexes=None,
         selected_cache_indices: Optional[List[int]] = None,
+        mot_inference_layout=None,
     ) -> BaseNavitOutputWithPast:
 
         residual = packed_query_sequence
         if mode == "und":
             packed_query_sequence = self.input_layernorm(packed_query_sequence)
+        elif mode == "gen" and mot_inference_layout is not None:
+            text_count = mot_inference_layout[0]
+            packed_query_sequence = torch.cat((
+                self.input_layernorm(packed_query_sequence[:text_count]).to(residual.dtype),
+                self.input_layernorm_moe_gen(packed_query_sequence[text_count:]).to(residual.dtype),
+            ))
         elif mode == "gen":
             packed_query_sequence_ = torch.zeros_like(packed_query_sequence)
             packed_query_sequence_[packed_text_indexes] = self.input_layernorm(packed_query_sequence[packed_text_indexes])
@@ -1202,6 +1268,7 @@ class Qwen2MoTDecoderLayer(nn.Module):
             packed_vae_token_indexes=packed_vae_token_indexes,
             packed_text_indexes=packed_text_indexes,
             selected_cache_indices=selected_cache_indices,
+            mot_inference_layout=mot_inference_layout,
         )
         packed_query_sequence = residual + packed_query_sequence
 
@@ -1210,6 +1277,17 @@ class Qwen2MoTDecoderLayer(nn.Module):
         if mode == "und":
             packed_query_sequence = self.post_attention_layernorm(packed_query_sequence)
             packed_query_sequence = self.mlp(packed_query_sequence)
+        elif mode == "gen" and mot_inference_layout is not None:
+            text_sequence = self.post_attention_layernorm(
+                packed_query_sequence[:text_count],
+            ).to(torch.bfloat16)
+            vae_sequence = self.post_attention_layernorm_moe_gen(
+                packed_query_sequence[text_count:],
+            ).to(torch.bfloat16)
+            packed_query_sequence = torch.cat((
+                self.mlp(text_sequence).to(torch.bfloat16),
+                self.mlp_moe_gen(vae_sequence).to(torch.bfloat16),
+            ))
         elif mode == "gen":
             packed_text_query_sequence = packed_query_sequence[packed_text_indexes]
             packed_vae_query_sequence = packed_query_sequence[packed_vae_token_indexes]
@@ -1437,6 +1515,7 @@ class Qwen2Model(Qwen2PreTrainedModel):
         packed_query_position_embeddings = (cos, sin)
 
         extra_inputs = {}
+        mot_inference_layout = None
         if self.use_moe:
             extra_inputs.update(mode=mode)
             if mode == 'gen':
@@ -1446,6 +1525,14 @@ class Qwen2Model(Qwen2PreTrainedModel):
                     packed_vae_token_indexes=packed_vae_token_indexes,
                     packed_text_indexes=packed_text_indexes,
                 )
+                if (not torch.is_grad_enabled() and
+                        self.config.layer_module == "Qwen2MoTDecoderLayer"):
+                    mot_inference_layout = _mot_inference_layout(
+                        packed_query_sequence, packed_text_indexes, packed_vae_token_indexes,
+                    )
+                    if mot_inference_layout is not None:
+                        packed_query_sequence = packed_query_sequence[mot_inference_layout[1]]
+                        extra_inputs["mot_inference_layout"] = mot_inference_layout
 
         for decoder_layer in self.layers:
             actual_layer = getattr(decoder_layer, "_checkpoint_wrapped_module", decoder_layer)
@@ -1462,6 +1549,9 @@ class Qwen2Model(Qwen2PreTrainedModel):
                 selected_cache_indices=selected_cache_indices,
                 **extra_inputs,
             )
+
+        if mot_inference_layout is not None:
+            packed_query_sequence = packed_query_sequence[mot_inference_layout[2]]
 
         if self.use_moe:
             if mode == "und":

@@ -10,6 +10,7 @@ from datetime import timedelta
 import torch
 from typing import List
 import torch.distributed as dist
+from torch.distributed.fsdp import FSDPModule
 from torch.utils.data import DataLoader
 from transformers import HfArgumentParser, set_seed
 from transformers.optimization import (
@@ -809,6 +810,10 @@ def main():
         fsdp2_lazy_init_root(ref_model)
     else:
         ref_model = None
+    ref_fsdp_modules = (
+        [module for module in ref_model.modules() if isinstance(module, FSDPModule)]
+        if ref_model is not None else []
+    )
 
     fsdp_model = apply_fsdp2_with_activation_checkpointing(model, fsdp_config, use_ac=True)
     fsdp2_lazy_init_root(fsdp_model)
@@ -1212,6 +1217,11 @@ def main():
                         )
                     if (training_args.kl_weight_image > 0 and training_args.tune_image_cot):
                         ref_v_pred = ref_loss_dict["packed_mse_preds"]
+
+                # Teacher outputs own their storage; its full weights are no
+                # longer needed for the policy forward or backward.
+                for ref_fsdp_module in reversed(ref_fsdp_modules):
+                    ref_fsdp_module.reshard()
 
                 output_dict = fsdp_model(**packed_input)
             if training_args.tune_text_cot:

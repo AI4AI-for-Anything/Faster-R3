@@ -1472,7 +1472,14 @@ class Qwen2Model(Qwen2PreTrainedModel):
                 ref_forward=ref_forward,
             )
 
-        for decoder_layer in self.layers:
+        for layer_index, decoder_layer in enumerate(self.layers):
+            # Retain late policy activations while keeping the wrapper/module
+            # tree intact. Call the wrapped module normally so FSDP hooks run;
+            # its original arithmetic and backward are unchanged.
+            if (self.training and torch.is_grad_enabled() and not ref_forward
+                    and self.config.layer_module == "Qwen2MoTDecoderLayer"
+                    and layer_index >= len(self.layers) - 8):
+                decoder_layer = getattr(decoder_layer, "_checkpoint_wrapped_module", decoder_layer)
             packed_sequence = decoder_layer(
                 packed_sequence=packed_sequence,
                 sample_lens=sample_lens,

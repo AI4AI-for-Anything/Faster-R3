@@ -1041,7 +1041,7 @@ class Bagel(PreTrainedModel):
                 "packed_text_indexes": packed_text_indexes
             }
 
-        output = forward_inference(
+        backbone_inputs = [dict(
             packed_query_sequence=packed_sequence,
             query_lens=packed_seqlens,
             packed_query_position_ids=packed_position_ids,
@@ -1052,12 +1052,9 @@ class Bagel(PreTrainedModel):
             update_past_key_values=False,
             is_causal=False,
             **extra_inputs,
-        )
-        v_t = self.llm2vae(output.packed_query_sequence)
-        v_t = v_t[packed_vae_token_indexes]
-
+        )]
         if cfg_text_scale > 1.0:
-            cfg_text_output = forward_inference(
+            backbone_inputs.append(dict(
                 packed_query_sequence=packed_sequence,
                 query_lens=packed_seqlens,
                 packed_query_position_ids=cfg_text_packed_position_ids,
@@ -1068,12 +1065,9 @@ class Bagel(PreTrainedModel):
                 update_past_key_values=False,
                 is_causal=False,
                 **extra_inputs,
-            )
-            cfg_text_v_t = self.llm2vae(cfg_text_output.packed_query_sequence)
-            cfg_text_v_t = cfg_text_v_t[packed_vae_token_indexes]
-
+            ))
         if cfg_img_scale > 1.0:
-            cfg_img_output = forward_inference(
+            backbone_inputs.append(dict(
                 packed_query_sequence=packed_sequence,
                 query_lens=packed_seqlens,
                 packed_query_position_ids=cfg_img_packed_position_ids,
@@ -1084,6 +1078,32 @@ class Bagel(PreTrainedModel):
                 update_past_key_values=False,
                 is_causal=False,
                 **extra_inputs,
+            ))
+        parallel_outputs = (flow_graph.replay_independent(backbone_inputs)
+                            if flow_graph is not None else None)
+        output_index = 0
+
+        output = (
+            forward_inference(**backbone_inputs[output_index])
+            if parallel_outputs is None else parallel_outputs[output_index]
+        )
+        v_t = self.llm2vae(output.packed_query_sequence)
+        v_t = v_t[packed_vae_token_indexes]
+
+        if cfg_text_scale > 1.0:
+            output_index += 1
+            cfg_text_output = (
+                forward_inference(**backbone_inputs[output_index])
+                if parallel_outputs is None else parallel_outputs[output_index]
+            )
+            cfg_text_v_t = self.llm2vae(cfg_text_output.packed_query_sequence)
+            cfg_text_v_t = cfg_text_v_t[packed_vae_token_indexes]
+
+        if cfg_img_scale > 1.0:
+            output_index += 1
+            cfg_img_output = (
+                forward_inference(**backbone_inputs[output_index])
+                if parallel_outputs is None else parallel_outputs[output_index]
             )
             cfg_img_v_t = self.llm2vae(cfg_img_output.packed_query_sequence)
             cfg_img_v_t = cfg_img_v_t[packed_vae_token_indexes]

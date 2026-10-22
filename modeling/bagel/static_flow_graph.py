@@ -21,10 +21,59 @@ class StaticFlowGraph:
     def __init__(self, language_model):
         self.language_model = language_model
         self.entries = {}
-        self.stream = None
         self.eager_calls = 0
         self.captures = 0
         self.replays = 0
+        self.parallel_groups = 0
+        self.parallel_replays = 0
+
+    @staticmethod
+    def _key(kwargs):
+        sequence = kwargs['packed_query_sequence']
+        return (tuple(sequence.shape), tuple(sequence.stride()), sequence.dtype,
+                sequence.device, tuple((name, id(value)) for name, value in
+                                       sorted(kwargs.items())
+                                       if name != 'packed_query_sequence'))
+
+    def replay_independent(self, branches):
+        """Join independent, already-captured backbones before CFG arithmetic.
+
+        Captures and eager calls keep their original serial path. Each entry
+        owns a distinct capture/replay stream and private graph pool, including
+        its library workspace. No floating result is shared between branches.
+        """
+        if len(branches) < 2 or torch.is_grad_enabled() or self.language_model.training:
+            return None
+        keys = [self._key(kwargs) for kwargs in branches]
+        if len(set(keys)) != len(keys):
+            return None
+        entries = [self.entries.get(key) for key in keys]
+        if any(entry is None or entry['graph'] is None for entry in entries):
+            return None
+        if len({entry['stream'].cuda_stream for entry in entries}) != len(entries):
+            return None
+
+        current = torch.cuda.current_stream()
+        try:
+            for kwargs, entry in zip(branches, entries):
+                stream = entry['stream']
+                # Inputs and the previous consumers of these persistent graph
+                # outputs finish on current before any branch can overwrite them.
+                stream.wait_stream(current)
+                sequence = kwargs['packed_query_sequence']
+                sequence.record_stream(stream)
+                with torch.cuda.stream(stream):
+                    entry['inputs']['packed_query_sequence'].copy_(sequence)
+                    entry['graph'].replay()
+                self.replays += 1
+                self.parallel_replays += 1
+        finally:
+            # Also establish cleanup dependencies if a launch raises.
+            for entry in entries:
+                current.wait_stream(entry['stream'])
+                entry['output'].packed_query_sequence.record_stream(current)
+        self.parallel_groups += 1
+        return [entry['output'] for entry in entries]
 
     def __call__(self, **kwargs):
         sequence = kwargs['packed_query_sequence']
@@ -47,10 +96,7 @@ class StaticFlowGraph:
             self.eager_calls += 1
             return self.language_model.forward_inference(**kwargs)
 
-        key = (tuple(sequence.shape), tuple(sequence.stride()), sequence.dtype,
-               sequence.device, tuple((name, id(value)) for name, value in
-                                      sorted(kwargs.items())
-                                      if name != 'packed_query_sequence'))
+        key = self._key(kwargs)
         entry = self.entries.get(key)
         if entry is None:
             # This original integer coverage check cannot run inside capture.
@@ -78,14 +124,15 @@ class StaticFlowGraph:
             entry['kv_meta'], entry['packing'] = _static_kv_packing_meta(
                 cache, inputs['query_lens'], None, sequence.device,
             )
-            if self.stream is None:
-                self.stream = torch.cuda.Stream(device=sequence.device)
+            # Separate capture streams keep library workspaces independent
+            # when these private graphs are later replayed concurrently.
+            entry['stream'] = torch.cuda.Stream(device=sequence.device)
             graph = torch.cuda.CUDAGraph()
             current = torch.cuda.current_stream()
-            self.stream.wait_stream(current)
-            with torch.cuda.graph(graph, stream=self.stream):
+            entry['stream'].wait_stream(current)
+            with torch.cuda.graph(graph, stream=entry['stream']):
                 entry['output'] = self.language_model.forward_inference(**inputs)
-            current.wait_stream(self.stream)
+            current.wait_stream(entry['stream'])
             entry['graph'] = graph
             self.captures += 1
         # Capture records operations; execute exactly once for this real call.
@@ -96,4 +143,6 @@ class StaticFlowGraph:
     def report(self):
         rank = dist.get_rank() if dist.is_initialized() else 0
         print(f"[static-flow-graph rank={rank}] eager={self.eager_calls} "
-              f"captures={self.captures} replays={self.replays}", flush=True)
+              f"captures={self.captures} replays={self.replays} "
+              f"parallel_groups={self.parallel_groups} "
+              f"parallel_replays={self.parallel_replays}", flush=True)

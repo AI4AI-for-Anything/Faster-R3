@@ -1506,6 +1506,7 @@ class Qwen2Model(Qwen2PreTrainedModel):
         packed_vae_token_indexes=None,
         packed_text_indexes=None,
         selected_cache_indices: Optional[List[int]] = None,
+        validated_mot_layout=None,
     ) -> BaseNavitOutputWithPast:
 
         # create position embeddings to be shared across the decoder layers
@@ -1527,9 +1528,13 @@ class Qwen2Model(Qwen2PreTrainedModel):
                 )
                 if (not torch.is_grad_enabled() and
                         self.config.layer_module == "Qwen2MoTDecoderLayer"):
-                    mot_inference_layout = _mot_inference_layout(
-                        packed_query_sequence, packed_text_indexes, packed_vae_token_indexes,
-                    )
+                    # A call-scoped flow graph can supply the same validated
+                    # partition while its index tensors remain immutable.
+                    mot_inference_layout = validated_mot_layout
+                    if mot_inference_layout is None:
+                        mot_inference_layout = _mot_inference_layout(
+                            packed_query_sequence, packed_text_indexes, packed_vae_token_indexes,
+                        )
                     if mot_inference_layout is not None:
                         packed_query_sequence = packed_query_sequence[mot_inference_layout[1]]
                         extra_inputs["mot_inference_layout"] = mot_inference_layout
@@ -1649,6 +1654,7 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel):
         packed_vae_token_indexes=None,
         packed_text_indexes=None,
         selected_cache_indices: Optional[List[int]] = None,
+        validated_mot_layout=None,
     ) -> BaseNavitOutputWithPast:
         
         self.model.forward
@@ -1666,6 +1672,7 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel):
             packed_vae_token_indexes=packed_vae_token_indexes,
             packed_text_indexes=packed_text_indexes,
             selected_cache_indices=selected_cache_indices,
+            validated_mot_layout=validated_mot_layout,
         )
 
         return outputs

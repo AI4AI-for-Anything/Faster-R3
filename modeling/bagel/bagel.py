@@ -24,6 +24,7 @@ from modeling.diffusion.sde_sampler import SDESampler
 from .qwen2_navit import NaiveCache, Qwen2ForCausalLM, NaiveCacheMultiSeq, StaticKVCache
 from .modeling_utils import MLPconnector, TimestepEmbedder, PositionEmbedding
 from .static_text_graph import StaticTextGraph
+from .static_flow_graph import StaticFlowGraph
 from .static_text_sampling_graph import StaticTextSamplingGraph
 
 
@@ -705,6 +706,7 @@ class Bagel(PreTrainedModel):
         cfg_type: str = "parallel",
     ):
         x_t = packed_init_noises
+        flow_graph = StaticFlowGraph(self.language_model)
 
         timesteps = torch.linspace(1, 0, num_timesteps, device=x_t.device)
         timesteps = timestep_shift * timesteps / (1 + (timestep_shift - 1) * timesteps)
@@ -751,10 +753,12 @@ class Bagel(PreTrainedModel):
                 cfg_img_past_key_values=cfg_img_past_key_values,
                 cfg_img_packed_key_value_indexes=cfg_img_packed_key_value_indexes,
                 cfg_type=cfg_type,
+                flow_graph=flow_graph,
             )
 
             x_t = x_t - v_t * dts[i] # velocity pointing from data to noise
         unpacked_latent = x_t.split((packed_seqlens - 2).tolist())
+        flow_graph.report()
         return unpacked_latent
 
     @torch.no_grad
@@ -795,6 +799,7 @@ class Bagel(PreTrainedModel):
         use_oss = False,
     ):
         x_t = packed_init_noises
+        flow_graph = StaticFlowGraph(self.language_model)
 
         timesteps = torch.linspace(1, 0, num_timesteps, device=x_t.device)
         if use_oss and cfg_text_scale > 1.0:
@@ -845,6 +850,7 @@ class Bagel(PreTrainedModel):
                 cfg_img_past_key_values=cfg_img_past_key_values,
                 cfg_img_packed_key_value_indexes=cfg_img_packed_key_value_indexes,
                 cfg_type=cfg_type,
+                flow_graph=flow_graph,
             )
             x_t, log_prob = sde_sampler.step(x_t, t, dts[i], v_t)
             # TODO: move to cpu
@@ -857,6 +863,7 @@ class Bagel(PreTrainedModel):
         unpacked_timesteps = [timesteps for _ in range(len(packed_seqlens))] # bs x [num_timesteps-1]
         unpacked_dts = [dts for _ in range(len(packed_seqlens))] # bs x [num_timesteps-1]
         # x_0, {x_T,...,x_0}, {logp_{T-1},...,logp_0}, {t_{T},...,t_1}, {dt_T,...,dt}
+        flow_graph.report()
         return unpacked_latent, latents, log_probs, unpacked_timesteps, unpacked_dts
     
     @torch.no_grad
@@ -898,6 +905,7 @@ class Bagel(PreTrainedModel):
     ):
         # mix ODE and SDE sampling
         x_t = packed_init_noises
+        flow_graph = StaticFlowGraph(self.language_model)
 
         timesteps = torch.linspace(1, 0, num_timesteps, device=x_t.device)
         timesteps = timestep_shift * timesteps / (1 + (timestep_shift - 1) * timesteps)
@@ -950,6 +958,7 @@ class Bagel(PreTrainedModel):
                 cfg_img_past_key_values=cfg_img_past_key_values,
                 cfg_img_packed_key_value_indexes=cfg_img_packed_key_value_indexes,
                 cfg_type=cfg_type,
+                flow_graph=flow_graph,
             )
             is_sde = i in sde_timesteps_idx
             if is_sde:
@@ -974,6 +983,7 @@ class Bagel(PreTrainedModel):
             log_probs = []
             unpacked_timesteps = []
             unpacked_dts = []
+        flow_graph.report()
         return unpacked_latent, latents, log_probs, unpacked_timesteps, unpacked_dts
 
     @torch.no_grad
@@ -1008,7 +1018,9 @@ class Bagel(PreTrainedModel):
         cfg_img_past_key_values: Optional[NaiveCache] = None,
         cfg_img_packed_key_value_indexes: Optional[torch.LongTensor] = None,
         cfg_type: str = "parallel",
+        flow_graph=None,
     ):
+        forward_inference = self.language_model.forward_inference if flow_graph is None else flow_graph
         packed_text_embedding = self.language_model.model.embed_tokens(packed_text_ids)
         packed_sequence = packed_text_embedding.new_zeros((sum(packed_seqlens), self.hidden_size))
         packed_sequence[packed_text_indexes] = packed_text_embedding
@@ -1029,7 +1041,7 @@ class Bagel(PreTrainedModel):
                 "packed_text_indexes": packed_text_indexes
             }
 
-        output = self.language_model.forward_inference(
+        output = forward_inference(
             packed_query_sequence=packed_sequence,
             query_lens=packed_seqlens,
             packed_query_position_ids=packed_position_ids,
@@ -1045,7 +1057,7 @@ class Bagel(PreTrainedModel):
         v_t = v_t[packed_vae_token_indexes]
 
         if cfg_text_scale > 1.0:
-            cfg_text_output = self.language_model.forward_inference(
+            cfg_text_output = forward_inference(
                 packed_query_sequence=packed_sequence,
                 query_lens=packed_seqlens,
                 packed_query_position_ids=cfg_text_packed_position_ids,
@@ -1061,7 +1073,7 @@ class Bagel(PreTrainedModel):
             cfg_text_v_t = cfg_text_v_t[packed_vae_token_indexes]
 
         if cfg_img_scale > 1.0:
-            cfg_img_output = self.language_model.forward_inference(
+            cfg_img_output = forward_inference(
                 packed_query_sequence=packed_sequence,
                 query_lens=packed_seqlens,
                 packed_query_position_ids=cfg_img_packed_position_ids,

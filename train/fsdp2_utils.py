@@ -334,19 +334,13 @@ def clip_grad_norm_fsdp2(
 
 
 @contextmanager
-def fsdp2_rollout_context(model: nn.Module, *, retain_unsharded: bool = False):
-    """Gather for rollout, optionally retaining weights for the next training forward.
-
-    With retention, the normal FSDP backward reshards before the optimizer step.
-    Evaluation and exceptional exits still release the gathered weights here.
-    """
+def fsdp2_rollout_context(model: nn.Module):
     fsdp_modules = [module for module in model.modules() if isinstance(module, FSDPModule)]
     was_training = model.training
     prev_grad_enabled = torch.is_grad_enabled()
     saved_hooks = {}
     saved_ckpt_forwards = {}
     unshard_handles = []
-    completed = False
 
     try:
         model.eval()
@@ -379,7 +373,6 @@ def fsdp2_rollout_context(model: nn.Module, *, retain_unsharded: bool = False):
                 module.forward = module._checkpoint_wrapped_module.forward
 
         yield
-        completed = True
 
     finally:
         for module in model.modules():
@@ -390,9 +383,8 @@ def fsdp2_rollout_context(model: nn.Module, *, retain_unsharded: bool = False):
             for attr, hook_dict in saved_hooks.get(id(module), {}).items():
                 getattr(module, attr).update(hook_dict)
 
-        if not retain_unsharded or not completed:
-            for module in reversed(fsdp_modules):
-                module.reshard()
+        for module in reversed(fsdp_modules):
+            module.reshard()
 
         torch.cuda.empty_cache()
         torch.set_grad_enabled(prev_grad_enabled)

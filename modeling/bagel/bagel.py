@@ -1300,6 +1300,7 @@ class Bagel(PreTrainedModel):
                 and 'dynamic' not in self.language_model.model.rotary_emb.rope_type):
             decode_graph = StaticTextGraph(
                 self.language_model, past_key_values, {'mode': 'und'} if self.use_moe else {},
+                max_steps=max_length + 1,
             )
         active_sequences_original_indices = torch.arange(batch_size, device=curr_tokens.device)
         sampling_graph = None
@@ -1427,7 +1428,8 @@ class Bagel(PreTrainedModel):
         if decode_graph is not None:
             rank = dist.get_rank() if dist.is_initialized() else 0
             print(f"[static-text-graph rank={rank}] eager={decode_graph.eager_calls} "
-                  f"captures={decode_graph.captures} replays={decode_graph.replays}", flush=True)
+                  f"captures={decode_graph.captures} replays={decode_graph.replays} "
+                  f"host_checks={decode_graph.host_checks} bounded_replays={decode_graph.bounded_replays}", flush=True)
         if sampling_graph is not None:
             rank = dist.get_rank() if dist.is_initialized() else 0
             print(f"[static-text-sampling-graph rank={rank}] eager={sampling_graph.eager_calls} "

@@ -6,7 +6,13 @@ from .qwen2_navit import _static_kv_host_meta
 
 
 class StaticTextGraph:
-    def __init__(self, language_model, cache, extra_inputs):
+    """Call-scoped decode graph; max_steps declares one-token-only cache writes.
+
+    The bounded caller must be the sole cache writer and advance each selected
+    sequence once per call. Omitting the budget keeps the original checks.
+    """
+
+    def __init__(self, language_model, cache, extra_inputs, max_steps=None):
         self.language_model = language_model
         self.cache = cache
         self.extra_inputs = extra_inputs
@@ -15,6 +21,17 @@ class StaticTextGraph:
         self.eager_calls = 0
         self.captures = 0
         self.replays = 0
+        self.calls = 0
+        self.host_checks = 0
+        self.bounded_replays = 0
+        # The caller advances each active sequence by one per iteration. A
+        # shrinking subset cannot exceed this bound, including the EOS step.
+        # Other callers retain the original per-replay overflow check.
+        self.max_steps = max_steps
+        self.capacity_proven = False
+        if max_steps is not None and max_steps >= 0:
+            initial_max = max(cache.seq_lens.tolist(), default=0)
+            self.capacity_proven = initial_max + max_steps <= cache.max_len
 
     def _forward(self, entry):
         return self.language_model.forward_inference(
@@ -32,6 +49,7 @@ class StaticTextGraph:
         )
 
     def __call__(self, embedding, query_lens, positions, indices):
+        self.calls += 1
         # A shrinking active batch needs its own original kernel shapes. Buffers
         # and graph pools live only until this generate_text_batch call returns,
         # before FSDP resharding or any parameter update.
@@ -50,14 +68,22 @@ class StaticTextGraph:
         entry['query_lens'].copy_(query_lens)
         entry['positions'].copy_(positions)
         entry['indices'].copy_(indices)
-        # Refresh the original overflow check outside capture, including on
-        # replays. All layers use these same query/index objects during capture.
-        meta = _static_kv_host_meta(self.cache, entry['query_lens'], entry['indices'])
-        if meta['max_total'] > self.cache.max_len:
-            raise RuntimeError(
-                f"StaticKVCache overflow: need {meta['max_total']} tokens, "
-                f"but max_len={self.cache.max_len}"
-            )
+        bounded_replay = (entry['graph'] is not None and self.capacity_proven
+                          and self.calls <= self.max_steps
+                          and entry['single_token_query'])
+        if bounded_replay:
+            self.bounded_replays += 1
+        else:
+            # Every capture still initializes its original metadata outside
+            # capture. The graph reads live CUDA cache lengths on every replay.
+            meta = _static_kv_host_meta(self.cache, entry['query_lens'], entry['indices'])
+            self.host_checks += 1
+            entry['single_token_query'] = meta['uniform_q'] and meta['q'][0] == 1
+            if meta['max_total'] > self.cache.max_len:
+                raise RuntimeError(
+                    f"StaticKVCache overflow: need {meta['max_total']} tokens, "
+                    f"but max_len={self.cache.max_len}"
+                )
         if entry['graph'] is None:
             graph = torch.cuda.CUDAGraph()
             current = torch.cuda.current_stream()

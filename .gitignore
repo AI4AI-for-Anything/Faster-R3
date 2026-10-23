@@ -7,3 +7,13 @@ results
 eval_results
 tests
 .DS_Store
+# Training outputs, checkpoints and traces stay outside the repository
+/output/
+/outputs/
+/ckpt/
+/checkpoints/
+*.safetensors
+*.pt
+*.pth
+*.nsys-rep
+*.trace.json

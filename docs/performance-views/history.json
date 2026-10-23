@@ -1,0 +1,536 @@
+{
+ "hardware": "4 H200-class GPUs (Hopper, about 140 GiB each) in one host; every round ran on the same host",
+ "workload": "R3 Tree-RL of BAGEL-7B-MoT with the GenEval reward: upstream scripts/train_rl.sh arguments with the recorded deviations (4 GPUs, --num_shard 4, GenEval data and reward, a 4-prompt validation file); group size 16, policy group size 4, two rounds (generate, then reflect and refine)",
+ "scope": "Each row is one round of the frozen bit-exact bench. Bitwise: the candidate tree trains steps 0-13 in deterministic mode and every recorded value on all four ranks plus the final parameter and Adam digests must equal the reference record. Timing (only if bitwise identical): reference A, candidate, reference B in independent launches on the same host; 16 steps each; after 10 warm-up steps, three windows of 2 steps (one generate and one refine step); seconds per step = window wall time / 2 (slowest rank). ratio = min(reference A, reference B) / candidate per window; speedup = smallest of the three ratios; threshold = max(1.02, 1 + 2 x reference spread). Rows are cumulative trees, not isolated ablations, and rounds are not paired with each other. Commits are commits of this repository.",
+ "reference": {
+  "commit": "761b0b0",
+  "branch": "upstream",
+  "tree_source_sha256": "f993d78bb08e4145c51fae2393cfef1677612270741c191e4e7f7bc2e36c6f68",
+  "final_digest_rank0": "c2b02b63537fc5576515f96744058e5799e6a1fb996516560558b846983d2175",
+  "note": "Two bitwise runs of the reference on this host were identical before any round."
+ },
+ "rows": [
+  {
+   "round": "r00",
+   "commit": null,
+   "label": "Control: unmodified upstream tree timed as the candidate",
+   "status": "control (no benefit, as expected)",
+   "in_main": false,
+   "tree_source_sha256": "f993d78bb08e4145c51fae2393cfef1677612270741c191e4e7f7bc2e36c6f68",
+   "bitwise_identical": true,
+   "bitwise_steps": 14,
+   "final_digest_rank0": "c2b02b63537fc5576515f96744058e5799e6a1fb996516560558b846983d2175",
+   "reference_a_s": [
+    23.2512,
+    24.4642,
+    23.9264
+   ],
+   "candidate_s": [
+    23.0619,
+    23.8942,
+    23.6418
+   ],
+   "reference_b_s": [
+    23.3797,
+    24.1746,
+    23.4204
+   ],
+   "ratios": [
+    1.0082,
+    1.0117,
+    0.9906
+   ],
+   "speedup": 0.9906,
+   "reference_spread": 0.0216,
+   "threshold": 1.0432,
+   "passed_threshold": false
+  },
+  {
+   "round": "r01",
+   "commit": "9a7c69b",
+   "label": "KV-cache lengths read from the GPU once per forward",
+   "status": "accepted, in main",
+   "in_main": true,
+   "tree_source_sha256": "6a7b013536cdd2dbd4a42f8c1ac14e8477c38d813f31491590bbbd59ab7c66b1",
+   "bitwise_identical": true,
+   "bitwise_steps": 14,
+   "final_digest_rank0": "c2b02b63537fc5576515f96744058e5799e6a1fb996516560558b846983d2175",
+   "reference_a_s": [
+    23.346,
+    24.1664,
+    23.3035
+   ],
+   "candidate_s": [
+    21.8604,
+    22.9004,
+    21.9865
+   ],
+   "reference_b_s": [
+    23.4923,
+    24.3926,
+    23.5752
+   ],
+   "ratios": [
+    1.068,
+    1.0553,
+    1.0599
+   ],
+   "speedup": 1.0553,
+   "reference_spread": 0.0117,
+   "threshold": 1.0233,
+   "passed_threshold": true
+  },
+  {
+   "round": "r02",
+   "commit": "0860070",
+   "label": "CUDA-graph replay of the text-decoding backbone",
+   "status": "accepted, in main",
+   "in_main": true,
+   "tree_source_sha256": "71676a4545bea785c58a0339016a734e7ea76446b9897499945ab01983bab40a",
+   "bitwise_identical": true,
+   "bitwise_steps": 14,
+   "final_digest_rank0": "c2b02b63537fc5576515f96744058e5799e6a1fb996516560558b846983d2175",
+   "reference_a_s": [
+    23.6531,
+    24.372,
+    23.5821
+   ],
+   "candidate_s": [
+    17.2175,
+    18.381,
+    17.7495
+   ],
+   "reference_b_s": [
+    23.0356,
+    23.9092,
+    23.5855
+   ],
+   "ratios": [
+    1.3379,
+    1.3008,
+    1.3286
+   ],
+   "speedup": 1.3008,
+   "reference_spread": 0.0268,
+   "threshold": 1.0536,
+   "passed_threshold": true
+  },
+  {
+   "round": "r03",
+   "commit": "35cd537",
+   "label": "KV packing indexes reused across layers",
+   "status": "accepted, in main",
+   "in_main": true,
+   "tree_source_sha256": "e598c88e1e84216c10f51169c6c4e9f2c75f2a0910810d40306782fdf8996deb",
+   "bitwise_identical": true,
+   "bitwise_steps": 14,
+   "final_digest_rank0": "c2b02b63537fc5576515f96744058e5799e6a1fb996516560558b846983d2175",
+   "reference_a_s": [
+    23.6227,
+    24.0406,
+    23.51
+   ],
+   "candidate_s": [
+    16.7179,
+    17.0548,
+    17.3005
+   ],
+   "reference_b_s": [
+    23.763,
+    23.9204,
+    23.6448
+   ],
+   "ratios": [
+    1.413,
+    1.4026,
+    1.3589
+   ],
+   "speedup": 1.3589,
+   "reference_spread": 0.0059,
+   "threshold": 1.02,
+   "passed_threshold": true
+  },
+  {
+   "round": "r04",
+   "commit": "8f86d88",
+   "label": "Diffusion timesteps built on the GPU",
+   "status": "accepted, in main",
+   "in_main": true,
+   "tree_source_sha256": "c0d4b7c6232af7194ef76237c1680236bcc1c0160ab4f0cabab6a044803d3295",
+   "bitwise_identical": true,
+   "bitwise_steps": 14,
+   "final_digest_rank0": "c2b02b63537fc5576515f96744058e5799e6a1fb996516560558b846983d2175",
+   "reference_a_s": [
+    23.4178,
+    24.0207,
+    23.2522
+   ],
+   "candidate_s": [
+    15.9797,
+    16.8815,
+    16.7699
+   ],
+   "reference_b_s": [
+    23.3005,
+    24.1811,
+    23.7259
+   ],
+   "ratios": [
+    1.4581,
+    1.4229,
+    1.3865
+   ],
+   "speedup": 1.3865,
+   "reference_spread": 0.0204,
+   "threshold": 1.0407,
+   "passed_threshold": true
+  },
+  {
+   "round": "r05",
+   "commit": "3d9841b",
+   "label": "One host read per decoded token batch",
+   "status": "accepted, in main",
+   "in_main": true,
+   "tree_source_sha256": "2f7a94e98f48de2f71017e4e78929ba7be96c54a2d8751c438a58c696e0d44c3",
+   "bitwise_identical": true,
+   "bitwise_steps": 14,
+   "final_digest_rank0": "c2b02b63537fc5576515f96744058e5799e6a1fb996516560558b846983d2175",
+   "reference_a_s": [
+    23.0895,
+    23.7018,
+    23.1296
+   ],
+   "candidate_s": [
+    15.8922,
+    16.725,
+    16.4097
+   ],
+   "reference_b_s": [
+    23.8882,
+    23.7549,
+    23.744
+   ],
+   "ratios": [
+    1.4529,
+    1.4172,
+    1.4095
+   ],
+   "speedup": 1.4095,
+   "reference_spread": 0.0346,
+   "threshold": 1.0692,
+   "passed_threshold": true
+  },
+  {
+   "round": "r09",
+   "commit": "7c145be",
+   "label": "KL-reference weights freed before the policy pass",
+   "status": "accepted, in main",
+   "in_main": true,
+   "tree_source_sha256": "67b9d761e27a9bfbaee485bb47ad8886e908e80091ba182d5e0722398e0db08a",
+   "bitwise_identical": true,
+   "bitwise_steps": 14,
+   "final_digest_rank0": "c2b02b63537fc5576515f96744058e5799e6a1fb996516560558b846983d2175",
+   "reference_a_s": [
+    23.4747,
+    23.8704,
+    23.483
+   ],
+   "candidate_s": [
+    15.8802,
+    16.6711,
+    16.4899
+   ],
+   "reference_b_s": [
+    23.3002,
+    24.0382,
+    23.3261
+   ],
+   "ratios": [
+    1.4673,
+    1.4318,
+    1.4146
+   ],
+   "speedup": 1.4146,
+   "reference_spread": 0.0075,
+   "threshold": 1.02,
+   "passed_threshold": true
+  },
+  {
+   "round": "r10",
+   "commit": "1fc390c",
+   "label": "MoT inference tokens kept in expert order",
+   "status": "accepted, in main",
+   "in_main": true,
+   "tree_source_sha256": "ab8a230271e457ff114aa67f52d09ec5352b922349c45a6f8c5706c5f5db47ca",
+   "bitwise_identical": true,
+   "bitwise_steps": 14,
+   "final_digest_rank0": "c2b02b63537fc5576515f96744058e5799e6a1fb996516560558b846983d2175",
+   "reference_a_s": [
+    23.9247,
+    23.8104,
+    23.0435
+   ],
+   "candidate_s": [
+    15.4727,
+    16.3107,
+    16.1735
+   ],
+   "reference_b_s": [
+    23.3194,
+    23.5803,
+    22.9718
+   ],
+   "ratios": [
+    1.5071,
+    1.4457,
+    1.4203
+   ],
+   "speedup": 1.4203,
+   "reference_spread": 0.026,
+   "threshold": 1.0519,
+   "passed_threshold": true
+  },
+  {
+   "round": "r11",
+   "commit": "05d77a0",
+   "label": "Text-decoding bookkeeping overlapped with GPU work",
+   "status": "rejected: below threshold, reverted",
+   "in_main": false,
+   "tree_source_sha256": "6db848503cad760209d69eb07e932592b1fc307a19552612e9830e8f8619d026",
+   "bitwise_identical": true,
+   "bitwise_steps": 14,
+   "final_digest_rank0": "c2b02b63537fc5576515f96744058e5799e6a1fb996516560558b846983d2175",
+   "reference_a_s": [
+    29.017,
+    29.3933,
+    27.9603
+   ],
+   "candidate_s": [
+    15.4533,
+    16.1239,
+    15.9818
+   ],
+   "reference_b_s": [
+    22.8345,
+    23.5609,
+    23.3552
+   ],
+   "ratios": [
+    1.4776,
+    1.4612,
+    1.4614
+   ],
+   "speedup": 1.4612,
+   "reference_spread": 0.2707,
+   "threshold": 1.5415,
+   "passed_threshold": false
+  },
+  {
+   "round": "r12",
+   "commit": "fc169bd",
+   "label": "CUDA-graph replay of LM head and sampler",
+   "status": "accepted, in main",
+   "in_main": true,
+   "tree_source_sha256": "06804e1be713884d427284783d46441c2b51c361c7e49c8733e42ba6ebc737dd",
+   "bitwise_identical": true,
+   "bitwise_steps": 14,
+   "final_digest_rank0": "c2b02b63537fc5576515f96744058e5799e6a1fb996516560558b846983d2175",
+   "reference_a_s": [
+    23.188,
+    23.8038,
+    23.0705
+   ],
+   "candidate_s": [
+    15.6272,
+    16.294,
+    15.5946
+   ],
+   "reference_b_s": [
+    23.2541,
+    23.8674,
+    23.3586
+   ],
+   "ratios": [
+    1.4838,
+    1.4609,
+    1.4794
+   ],
+   "speedup": 1.4609,
+   "reference_spread": 0.0125,
+   "threshold": 1.025,
+   "passed_threshold": true
+  },
+  {
+   "round": "r14",
+   "commit": "b8c4a67",
+   "label": "Policy weights kept gathered from rollout to backward",
+   "status": "accepted, reverted from main",
+   "in_main": false,
+   "tree_source_sha256": "2828c62bc7af23ddad02793e8ec6206f4247de41303c399d8718f0647f63ba1d",
+   "bitwise_identical": true,
+   "bitwise_steps": 14,
+   "final_digest_rank0": "c2b02b63537fc5576515f96744058e5799e6a1fb996516560558b846983d2175",
+   "reference_a_s": [
+    23.2436,
+    24.3386,
+    23.3095
+   ],
+   "candidate_s": [
+    15.3216,
+    16.1666,
+    16.0916
+   ],
+   "reference_b_s": [
+    23.2421,
+    23.9031,
+    23.9428
+   ],
+   "ratios": [
+    1.517,
+    1.4785,
+    1.4485
+   ],
+   "speedup": 1.4485,
+   "reference_spread": 0.0272,
+   "threshold": 1.0543,
+   "passed_threshold": true
+  },
+  {
+   "round": "r15",
+   "commit": "7e91f38",
+   "label": "KV capacity proven once per decoding call",
+   "status": "accepted, in main",
+   "in_main": true,
+   "tree_source_sha256": "bcfbf733cd444c754618e7e48248c69b6966be7445f95ab23734ca60252fa89b",
+   "bitwise_identical": true,
+   "bitwise_steps": 14,
+   "final_digest_rank0": "c2b02b63537fc5576515f96744058e5799e6a1fb996516560558b846983d2175",
+   "reference_a_s": [
+    23.6394,
+    24.0745,
+    23.1353
+   ],
+   "candidate_s": [
+    15.2869,
+    16.1264,
+    16.1297
+   ],
+   "reference_b_s": [
+    23.2202,
+    23.7937,
+    23.3055
+   ],
+   "ratios": [
+    1.519,
+    1.4755,
+    1.4343
+   ],
+   "speedup": 1.4343,
+   "reference_spread": 0.0181,
+   "threshold": 1.0361,
+   "passed_threshold": true
+  },
+  {
+   "round": "r16",
+   "commit": "d18c6ac",
+   "label": "CUDA-graph replay of the image-flow backbones",
+   "status": "accepted, in main",
+   "in_main": true,
+   "tree_source_sha256": "b0b39af7aa6b27126326dcb9d7f6f572a0cb3ac34e6c2ab4188cbea2e3c974b5",
+   "bitwise_identical": true,
+   "bitwise_steps": 14,
+   "final_digest_rank0": "c2b02b63537fc5576515f96744058e5799e6a1fb996516560558b846983d2175",
+   "reference_a_s": [
+    23.0095,
+    23.9785,
+    23.104
+   ],
+   "candidate_s": [
+    15.4089,
+    16.2828,
+    15.9303
+   ],
+   "reference_b_s": [
+    23.1204,
+    23.7465,
+    23.2958
+   ],
+   "ratios": [
+    1.4933,
+    1.4584,
+    1.4503
+   ],
+   "speedup": 1.4503,
+   "reference_spread": 0.0098,
+   "threshold": 1.02,
+   "passed_threshold": true
+  },
+  {
+   "round": "r17",
+   "commit": "e71a7bd",
+   "label": "CFG branches replayed concurrently on separate streams",
+   "status": "accepted, in main",
+   "in_main": true,
+   "tree_source_sha256": "315a5ebcb308408c7204651c4f81f54a4b61b66c86f7f046a4b04f63d3709952",
+   "bitwise_identical": true,
+   "bitwise_steps": 14,
+   "final_digest_rank0": "c2b02b63537fc5576515f96744058e5799e6a1fb996516560558b846983d2175",
+   "reference_a_s": [
+    23.4012,
+    24.1543,
+    24.2251
+   ],
+   "candidate_s": [
+    15.3583,
+    16.039,
+    16.0279
+   ],
+   "reference_b_s": [
+    23.4679,
+    23.5922,
+    23.7644
+   ],
+   "ratios": [
+    1.5237,
+    1.4709,
+    1.4827
+   ],
+   "speedup": 1.4709,
+   "reference_spread": 0.0238,
+   "threshold": 1.0476,
+   "passed_threshold": true
+  }
+ ],
+ "incomplete": [
+  {
+   "round": "r06",
+   "commit": "f6be523",
+   "label": "Gathered rollout weights kept through the training forward",
+   "status": "incomplete: CUDA out of memory (step 9 backward)"
+  },
+  {
+   "round": "r06b",
+   "commit": "85a9d90",
+   "label": "Only decoder weights kept across the rollout boundary",
+   "status": "incomplete: CUDA out of memory (step 6 rollout all-gather)"
+  },
+  {
+   "round": "r07",
+   "commit": "de43b14",
+   "label": "Previous gradients released before rollout allocations",
+   "status": "incomplete: CUDA out of memory (step 3 backward)"
+  },
+  {
+   "round": "r08",
+   "commit": "be03e3c",
+   "label": "MoT inference tokens in expert order, before r09 freed memory",
+   "status": "incomplete: CUDA out of memory in the timing run (step 3 backward); redone as r10"
+  },
+  {
+   "round": "r13",
+   "commit": "40cffe8",
+   "label": "Activations kept (not recomputed) in the last eight policy MoT layers",
+   "status": "incomplete: CUDA out of memory (step 1 policy forward)"
+  }
+ ]
+}

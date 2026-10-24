@@ -138,7 +138,7 @@ def history():
                  linespacing=1.25)
     fig.text(.09, top(9.7), 'Each point is one round of the same frozen bit-exact bench on the same host: the paired '
              'speedup of that tree against\nfreshly timed upstream runs. Rounds are separate measurements, not paired '
-             'with each other: R15 and R16 scored\nbelow R12, and the reference runs of accepted rounds differed by up '
+             'with each other: R15 and R16 scored\nbelow R12, and the baseline runs of accepted rounds differed by up '
              'to 3.5%. Not in main: R11 and R14 (reverted)\nand five rounds that ran out of memory.', fontsize=9.3, color=MUTED,
              linespacing=1.4)
     save(fig, ROOT / '02-history')
@@ -150,8 +150,8 @@ def paired_timing():
     panels = [(pick['r00'], 'Control: upstream timed as the candidate'), (pick['r17'], 'R17: final Faster-R3')]
     fig = plt.figure(figsize=(10, 5.2), facecolor='white')
     fig.text(.06, .92, 'How the speedup is measured', color=INK, weight='bold', fontsize=19)
-    fig.text(.06, .86, 'Seconds per RL step in each 2-step window (after 10 warm-up steps) · reference A → candidate → '
-             'reference B, independent launches', color=MUTED, fontsize=10.2)
+    fig.text(.06, .86, 'Seconds per RL step in each 2-step window (after 10 warm-up steps) · baseline A → candidate → '
+             'baseline B, independent launches', color=MUTED, fontsize=10.2)
     for k, (row, title) in enumerate(panels):
         ax = fig.add_axes([.07 + k * .49, .2, .41, .52])
         xs = np.arange(3)
@@ -171,8 +171,8 @@ def paired_timing():
         verdict = (f"speedup {row['speedup']:.4f}× < threshold {row['threshold']:.4f}: no benefit" if k == 0 else
                    f"speedup {row['speedup']:.4f}× ≥ threshold {row['threshold']:.4f}: accepted")
         ax.text(0, -.2, verdict, transform=ax.transAxes, fontsize=10, color=RED if k else MUTED)
-    fig.legend(handles=[Patch(facecolor=LIGHT, label='reference A'),
-                        Patch(facecolor=LIGHT, hatch='///', edgecolor='white', label='reference B'),
+    fig.legend(handles=[Patch(facecolor=LIGHT, label='baseline A'),
+                        Patch(facecolor=LIGHT, hatch='///', edgecolor='white', label='baseline B'),
                         Patch(facecolor=GREY, label='candidate (control)'),
                         Patch(facecolor=RED, label='candidate (Faster-R3)')],
                loc='lower center', ncol=4, frameon=False, fontsize=9.5, labelcolor=INK, bbox_to_anchor=(.5, .0))

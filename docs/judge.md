@@ -53,7 +53,7 @@ the same session, with production settings (no deterministic flags), 16 steps ea
   windows cover steps 10–11, 12–13 and 14–15, each one generate and one refine step; seconds per step = window
   time / 2.
 - Per window, ratio = min(baseline A, baseline B) / candidate. **Speedup = the smallest of the three ratios.**
-- Reference spread = the largest relative difference between baseline A and B over the windows. The round counts
+- Baseline spread = the largest relative difference between baseline A and B over the windows. The round counts
   only if speedup ≥ max(1.02, 1 + 2 × spread).
 - Timing is never compared with a stored number; every round times its own baselines.
 

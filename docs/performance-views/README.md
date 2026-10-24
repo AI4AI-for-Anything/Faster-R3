@@ -15,6 +15,6 @@ checks them against the recorded values.
 - `../change-views/module-map.svg`: the changed files grouped by area.
 
 `history.json` keeps, per round, the commit, the source digest of the measured tree, the bitwise verdict and the
-final rank-0 digest, the three windows of each run, the ratios, the speedup, the reference spread and the threshold,
+final rank-0 digest, the three windows of each run, the ratios, the speedup, the baseline spread and the threshold,
 plus the rounds that ran out of memory before a verdict. The values are copied from the bench's round records
 without host names or paths.

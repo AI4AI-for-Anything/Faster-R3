@@ -134,7 +134,7 @@ these GPUs, not a proof that smaller variants cannot fit.
 Speedups from the bench's round records ([history.json](performance-views/history.json)). Each round compares one
 tree against two freshly timed baseline runs; rounds are not paired with each other.
 
-| Round | Commit | Speedup | Threshold | Reference spread | Status |
+| Round | Commit | Speedup | Threshold | Baseline spread | Status |
 |---|---|---:|---:|---:|---|
 | R00 | — | 0.9906× | 1.0432 | 2.2% | control: unmodified upstream timed as the candidate |
 | R01 | `9a7c69b` | 1.0553× | 1.0233 | 1.2% | in main |

@@ -411,7 +411,7 @@ z
    <text style="font-weight: 700; font-size: 19px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #292122" x="43.2" y="29.952" transform="rotate(-0 43.2 29.952)">How the speedup is measured</text>
   </g>
   <g id="text_30">
-   <text style="font-size: 10.2px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #79696b" x="43.2" y="52.416" transform="rotate(-0 43.2 52.416)">Seconds per RL step in each 2-step window (after 10 warm-up steps) · reference A → candidate → reference B, independent launches</text>
+   <text style="font-size: 10.2px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #79696b" x="43.2" y="52.416" transform="rotate(-0 43.2 52.416)">Seconds per RL step in each 2-step window (after 10 warm-up steps) · baseline A → candidate → baseline B, independent launches</text>
   </g>
   <g id="legend_1">
    <g id="patch_24">
@@ -423,7 +423,7 @@ z
 " style="fill: #d7bdbf"/>
    </g>
    <g id="text_31">
-    <text style="font-size: 9.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #292122" x="153.810664" y="363.874297" transform="rotate(-0 153.810664 363.874297)">reference A</text>
+    <text style="font-size: 9.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #292122" x="153.810664" y="363.874297" transform="rotate(-0 153.810664 363.874297)">baseline A</text>
    </g>
    <g id="patch_25">
     <path d="M 227.68207 363.874297
@@ -434,7 +434,7 @@ z
 " style="fill: url(#h4e03f58e9c); stroke: #ffffff; stroke-linejoin: miter"/>
    </g>
    <g id="text_32">
-    <text style="font-size: 9.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #292122" x="254.28207" y="363.874297" transform="rotate(-0 254.28207 363.874297)">reference B</text>
+    <text style="font-size: 9.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #292122" x="254.28207" y="363.874297" transform="rotate(-0 254.28207 363.874297)">baseline B</text>
    </g>
    <g id="patch_26">
     <path d="M 328.172773 363.874297

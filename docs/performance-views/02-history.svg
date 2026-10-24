@@ -491,7 +491,7 @@ z
   <g id="text_56">
    <text style="font-size: 9.3px; font-family: 'DejaVu Sans'; fill: #79696b" transform="translate(58.32 662.918175)">Each point is one round of the same frozen bit-exact bench on the same host: the paired speedup of that tree against</text>
    <text style="font-size: 9.3px; font-family: 'DejaVu Sans'; fill: #79696b" transform="translate(58.32 674.74545)">freshly timed upstream runs. Rounds are separate measurements, not paired with each other: R15 and R16 scored</text>
-   <text style="font-size: 9.3px; font-family: 'DejaVu Sans'; fill: #79696b" transform="translate(58.32 686.572725)">below R12, and the reference runs of accepted rounds differed by up to 3.5%. Not in main: R11 and R14 (reverted)</text>
+   <text style="font-size: 9.3px; font-family: 'DejaVu Sans'; fill: #79696b" transform="translate(58.32 686.572725)">below R12, and the baseline runs of accepted rounds differed by up to 3.5%. Not in main: R11 and R14 (reverted)</text>
    <text style="font-size: 9.3px; font-family: 'DejaVu Sans'; fill: #79696b" transform="translate(58.32 698.4)">and five rounds that ran out of memory.</text>
   </g>
  </g>

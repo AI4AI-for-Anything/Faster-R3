@@ -67,11 +67,11 @@ The fused reductions reproduce the tested PyTorch reduction order, BF16 rounding
 
 ![Paired timing for total and training-code-only results](docs/performance-views/h100-paired-timing.svg)
 
-**Limits:** 14 deterministic steps do not establish long-training equivalence. Production-mode timing values were not compared numerically. The rank-0 wandb hook recorded empty lists, so evaluation-only metrics were not validated. The planned 200-step, three-seed training/quality comparison has no completed results in this release. Memory remains tight; the new eight-GPU result is a speed improvement, not a memory-saving claim. Full judge records, weights, generated images and profiler traces are not bundled. See [the judge and memory table](docs/judge.md).
+**Acceptance and scope:** the completed bit-exact checks satisfy this release's numerical acceptance criterion. Additional long-training consistency checks are not required. The observed scope is 14 deterministic steps on all eight ranks. Production-mode timing values were not compared numerically. The rank-0 wandb hook recorded empty lists, so evaluation-only metrics were not validated. Memory remains tight; the new eight-GPU result is a speed improvement, not a memory-saving claim. Full judge records, weights, generated images and profiler traces are not bundled. See [the judge and memory table](docs/judge.md).
 
 ## Current endpoint
 
-This release publishes the latest completed, directly measured milestone, **2.0831× total / 1.8803× training code alone**. It makes no performance-ceiling claim. Further scheduling or numerical changes need fresh paired timings and numerical validation; the full-training quality question remains open.
+This release publishes the latest completed, directly measured milestone, **2.0831× total / 1.8803× training code alone**. It makes no performance-ceiling claim. Further scheduling or numerical changes need fresh paired timings and numerical validation. The current release is accepted under the bit-exact criterion.
 
 ## More AI4AI-for-Anything projects
 

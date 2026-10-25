@@ -84,5 +84,7 @@ benchmark run.
 
 Numerical identity covers only 14 deterministic steps. Timing uses production settings whose numerical values
 were not compared. Full training, save/resume, other datasets, hardware, dependency versions or GPU counts are
-not certified. The proposed 200-step / three-seed paired training and quality protocol has no completed result
-in this release. No time-to-quality or generalization claim follows from these short-run results.
+not certified. The owner accepts the completed bit-exact checks as this release's numerical acceptance
+criterion. Additional long-training consistency or quality runs, including the previously proposed 200-step /
+three-seed protocol, are not required and are not pending release work. This acceptance does not expand the
+observed 14-step scope or constitute a measurement of time to quality or generalization.

@@ -1172,6 +1172,6 @@
     "Aggregate records exported from the completed remote rounds; no new GPU benchmark was run for this publication.",
     "Total includes reward-server execution changes; training-code-only uses the faster reward server on both sides.",
     "runtime_files fingerprints the measured Python code under modeling/ and train/. Original full-tree digests also included experiment tools and are not digests of this publication.",
-    "Rank-0 wandb hooks recorded empty lists. No completed long-training validation is claimed."
+    "Rank-0 wandb hooks recorded empty lists. Numerical acceptance is based on the completed 14-step bit-exact checks; additional long-training consistency checks are not required for this release."
   ]
 }

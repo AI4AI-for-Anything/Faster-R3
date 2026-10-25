@@ -34,6 +34,6 @@
   "limits": [
     "The GPU checks ran the published portable diagnostic scripts against the byte-identical measured runtime snapshot.",
     "No new full eight-rank training or timing run was performed for publication.",
-    "Text-decode capture-dependent diagnostics and the long-training quality protocol were not rerun."
+    "Text-decode capture-dependent diagnostics were not rerun. The owner accepts the completed bit-exact checks; the previously proposed long-training quality protocol is not required for this release."
   ]
 }

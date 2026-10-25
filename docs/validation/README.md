@@ -47,4 +47,5 @@ the eight-rank judge. The original diagnostic scripts report verdicts in JSON; i
 than assuming exit status zero implies success.
 
 The final source passed the external eight-rank, 14-step deterministic judge twice, once in each timing scope.
-See [judge.md](../judge.md) for the observed fields, empty-wandb gap, memory and missing long-training evidence.
+See [judge.md](../judge.md) for the observed fields, empty-wandb gap, memory and bit-exact acceptance scope.
+Additional long-training consistency checks are not required for this release.

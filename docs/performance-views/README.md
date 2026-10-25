@@ -1,6 +1,19 @@
-# Performance figures
+# Current eight-H100 figures
 
-Regenerate all figures with `python docs/performance-views/render.py` (matplotlib and numpy, no GPU). The script
+Run `python docs/performance-views/render_h100.py` (matplotlib and numpy). It first validates the source manifest
+and recomputes timing arithmetic from [../validation/h100.json](../validation/h100.json).
+
+- `h100-benchmark.svg`: total 2.0831×, explicitly including the reward service change; code-only 1.8803× shown separately.
+- `h100-history.svg`: individual and combined eight-GPU milestones, separated by comparison scope.
+- `h100-paired-timing.svg`: all three windows of both final A → candidate → B measurements.
+- `../change-views/h100-module-map.svg`: the latest optimization areas.
+
+These figures match the English and Chinese README. Optional `R3_FIGURE_PREVIEW_DIR` writes PNG previews outside
+the repository for visual inspection. The four-GPU assets below remain unchanged for the historical report.
+
+# Historical four-GPU figures
+
+Regenerate the historical figures with `python docs/performance-views/render.py` (matplotlib and numpy, no GPU). The script
 recomputes every ratio, speedup, spread and threshold from the recorded windows in [history.json](history.json) and
 checks them against the recorded values.
 

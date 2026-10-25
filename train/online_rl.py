@@ -500,6 +500,102 @@ def save_inference_results(inference_results, curr_step, results_dir, mode="trai
 
 
 
+def finish_rewards_and_advantages(
+    inference_results, curr_step, training_args, rollout_buffer, metadata, last_reward,
+    rollout_batch_size, current_policy_group, logger,
+):
+    """Block on the step's reward futures, then buffer gather, advantages and reward stats.
+
+    The body is the upstream main-loop code unchanged (same statements, same collectives in the same order); main()
+    only calls it later, after the reward-independent pack and training forwards, so the reward requests run while
+    the GPU works. Returns (text_advantages, image_advantages, additional_stats).
+    """
+    # first get all rewards, get per round rewards and cot length for logging
+    inference_results['per_sample_total_rewards'] = [[] for _ in range(rollout_batch_size)]
+    edit_img_adv_multiplier = []
+    per_round_format_rewards = [[] for _ in range(1)]
+    for sample_idx, per_sample_reward in enumerate(inference_results["per_sample_rewards"]):
+        for round_idx, per_round_reward in enumerate(per_sample_reward):
+            if training_args.reward_fn == "geneval":
+                all_scores, all_rewards, all_strict_rewards, all_group_rewards_dict, all_group_strict_rewards_dict = per_round_reward.result()
+                round_results = all_scores
+            elif training_args.reward_fn == "geneval_plus":
+                round_results = per_round_reward.result()
+            elif training_args.reward_fn == "tiif":
+                round_results = (per_round_reward.result(), "")
+            per_sample_reward[round_idx] = round_results[0]
+            per_round_format_rewards[round_idx].append(inference_results['per_sample_format_rewards'][sample_idx][round_idx])
+            if curr_step % training_args.rounds == 0:
+                format_reward = inference_results['per_sample_format_rewards'][sample_idx][round_idx]
+                total_reward = round_results[0] * format_reward + training_args.format_reward_weight * format_reward
+                inference_results['per_sample_total_rewards'][sample_idx].append(total_reward)
+                # update rollout buffer
+                rollout_buffer.update(metadata, round_results[0], inference_results['output_imgs'][sample_idx])
+            else:
+                this_reward = round_results[0]
+                improvement = this_reward - last_reward
+
+                format_reward = inference_results['per_sample_format_rewards'][sample_idx][round_idx]
+                if last_reward == 1 and "no further edit" in inference_results['per_sample_edit_operations'][sample_idx].lower():
+                    improvement = 1
+                if "no further edit" in inference_results['per_sample_edit_operations'][sample_idx].lower():
+                    edit_img_adv_multiplier.append(0)
+                else:
+                    edit_img_adv_multiplier.append(1)
+
+                total_reward = format_reward * training_args.format_reward_weight + improvement * format_reward
+                inference_results['per_sample_total_rewards'][sample_idx].append(total_reward)
+
+    if curr_step % training_args.rounds == 0:
+        rollout_buffer.all_gather()
+    logger.info(f"Rank {dist.get_rank()}: Rollout buffer length: {rollout_buffer.__len__()}")
+    # compute advantages
+    text_advantages, additional_stats = compute_advantages_for_multi_round_rollout(
+        inference_results["per_sample_total_rewards"], # with text format reward
+        current_policy_group,
+        first_subtract_mean=True,
+        first_divide_std=False,
+        later_operations="",
+        first_scaler=1.0,
+        later_scaler=1.0,
+    )
+    image_advantages, additional_stats = compute_advantages_for_multi_round_rollout(
+        inference_results["per_sample_rewards"], # without text format reward
+        current_policy_group,
+        first_subtract_mean=True,
+        first_divide_std=False,
+        later_operations="",
+        first_scaler=1.0,
+        later_scaler=1.0,
+    )
+
+    if curr_step % training_args.rounds != 0:
+        # mask image advantage if no further edit
+        for sample_idx, multiplier in enumerate(edit_img_adv_multiplier):
+            image_advantages[sample_idx][0] = image_advantages[sample_idx][0] * multiplier
+    logger.info(f"Rank {dist.get_rank()}: Text advantages: {text_advantages}")
+    logger.info(f"Rank {dist.get_rank()}: Image advantages: {image_advantages}")
+
+    # update rollout stats
+    round_idx = curr_step % training_args.rounds
+    mode = "gen" if curr_step % training_args.rounds == 0 else "edit"
+    mode = mode + "_" + str(round_idx)
+    # process cot length
+    round_mean_cot_length = inference_results[f'Round_0/mean_cot_length']
+    round_mean_cot_length = torch.tensor(round_mean_cot_length, device="cuda", dtype=torch.float).mean()
+    dist.all_reduce(round_mean_cot_length, op=dist.ReduceOp.AVG)
+    additional_stats[f'{mode}/mean_cot_length'] = round_mean_cot_length.item()
+    # process format reward
+    round_mean_format_reward = torch.tensor(per_round_format_rewards[0], device="cuda", dtype=torch.float).mean()
+    dist.all_reduce(round_mean_format_reward, op=dist.ReduceOp.AVG)
+    additional_stats[f'{mode}/mean_format_reward'] = round_mean_format_reward.item()
+    additional_stats[f'{mode}/mean_reward'] = additional_stats['round_mean_rewards'].pop("round_0")
+
+
+    dist.barrier()
+    return text_advantages, image_advantages, additional_stats
+
+
 class RolloutBuffer:
     def __init__(self, max_size=10000):
         self.perfect_buffer = []
@@ -976,6 +1072,13 @@ def main():
         sde_sampler=sde_sampler_gen,
     )
     rollout_buffer = RolloutBuffer()
+    # The frozen ViT is identical in the policy and the KL reference (deepcopy at init, never
+    # optimized), so the policy forward can reuse the reference forward's ViT output.
+    share_frozen_vit = (
+        ref_model is not None and training_args.visual_und and training_args.freeze_vit
+        and not any(p.requires_grad for p in fsdp_model.vit_model.parameters())
+        and not any(p.requires_grad for p in ref_model.vit_model.parameters())
+    )
 
     for curr_step in range(train_step, training_args.total_steps):
         if training_args.debug and curr_step == train_step:
@@ -1059,89 +1162,10 @@ def main():
                     generator=sample_generator,
                     **generation_kwargs,
                 )
-        # first get all rewards, get per round rewards and cot length for logging 
-        inference_results['per_sample_total_rewards'] = [[] for _ in range(rollout_batch_size)]
-        edit_img_adv_multiplier = []
-        per_round_format_rewards = [[] for _ in range(1)]
-        for sample_idx, per_sample_reward in enumerate(inference_results["per_sample_rewards"]):
-            for round_idx, per_round_reward in enumerate(per_sample_reward):
-                if training_args.reward_fn == "geneval":
-                    all_scores, all_rewards, all_strict_rewards, all_group_rewards_dict, all_group_strict_rewards_dict = per_round_reward.result()
-                    round_results = all_scores
-                elif training_args.reward_fn == "geneval_plus":
-                    round_results = per_round_reward.result()
-                elif training_args.reward_fn == "tiif":
-                    round_results = (per_round_reward.result(), "")
-                per_sample_reward[round_idx] = round_results[0]
-                per_round_format_rewards[round_idx].append(inference_results['per_sample_format_rewards'][sample_idx][round_idx])
-                if curr_step % training_args.rounds == 0:
-                    format_reward = inference_results['per_sample_format_rewards'][sample_idx][round_idx]
-                    total_reward = round_results[0] * format_reward + training_args.format_reward_weight * format_reward
-                    inference_results['per_sample_total_rewards'][sample_idx].append(total_reward)
-                    # update rollout buffer
-                    rollout_buffer.update(metadata, round_results[0], inference_results['output_imgs'][sample_idx])
-                else:
-                    this_reward = round_results[0]
-                    improvement = this_reward - last_reward
-
-                    format_reward = inference_results['per_sample_format_rewards'][sample_idx][round_idx]
-                    if last_reward == 1 and "no further edit" in inference_results['per_sample_edit_operations'][sample_idx].lower():
-                        improvement = 1
-                    if "no further edit" in inference_results['per_sample_edit_operations'][sample_idx].lower():
-                        edit_img_adv_multiplier.append(0)
-                    else:
-                        edit_img_adv_multiplier.append(1)
-
-                    total_reward = format_reward * training_args.format_reward_weight + improvement * format_reward
-                    inference_results['per_sample_total_rewards'][sample_idx].append(total_reward)
-
-        if curr_step % training_args.rounds == 0:
-            rollout_buffer.all_gather()
-        logger.info(f"Rank {dist.get_rank()}: Rollout buffer length: {rollout_buffer.__len__()}")
-        # compute advantages
-        text_advantages, additional_stats = compute_advantages_for_multi_round_rollout(
-            inference_results["per_sample_total_rewards"], # with text format reward
-            current_policy_group,
-            first_subtract_mean=True,
-            first_divide_std=False,
-            later_operations="",
-            first_scaler=1.0,
-            later_scaler=1.0,
-        )
-        image_advantages, additional_stats = compute_advantages_for_multi_round_rollout(
-            inference_results["per_sample_rewards"], # without text format reward
-            current_policy_group,
-            first_subtract_mean=True,
-            first_divide_std=False,
-            later_operations="",
-            first_scaler=1.0,
-            later_scaler=1.0,
-        )
-
-        if curr_step % training_args.rounds != 0:
-            # mask image advantage if no further edit
-            for sample_idx, multiplier in enumerate(edit_img_adv_multiplier):
-                image_advantages[sample_idx][0] = image_advantages[sample_idx][0] * multiplier
-        logger.info(f"Rank {dist.get_rank()}: Text advantages: {text_advantages}")
-        logger.info(f"Rank {dist.get_rank()}: Image advantages: {image_advantages}")
-
-        # update rollout stats
-        round_idx = curr_step % training_args.rounds
-        mode = "gen" if curr_step % training_args.rounds == 0 else "edit"
-        mode = mode + "_" + str(round_idx)
-        # process cot length
-        round_mean_cot_length = inference_results[f'Round_0/mean_cot_length']
-        round_mean_cot_length = torch.tensor(round_mean_cot_length, device="cuda", dtype=torch.float).mean()
-        dist.all_reduce(round_mean_cot_length, op=dist.ReduceOp.AVG)
-        additional_stats[f'{mode}/mean_cot_length'] = round_mean_cot_length.item()
-        # process format reward
-        round_mean_format_reward = torch.tensor(per_round_format_rewards[0], device="cuda", dtype=torch.float).mean()
-        dist.all_reduce(round_mean_format_reward, op=dist.ReduceOp.AVG)
-        additional_stats[f'{mode}/mean_format_reward'] = round_mean_format_reward.item()
-        additional_stats[f'{mode}/mean_reward'] = additional_stats['round_mean_rewards'].pop("round_0")
-
-
-        dist.barrier()
+        # rwlap: the reward futures submitted at the end of the rollout keep running while the reward-independent
+        # prepack, pack_batch and reference/policy forwards execute; finish_rewards_and_advantages (the unchanged
+        # upstream reward/advantage/stats block) runs right before the first use of the advantages.
+        rewards_pending = True
         loss_dict = {
             "text_policy_loss": [],
             "img_policy_loss": [],
@@ -1185,27 +1209,35 @@ def main():
             tqdm(
                 rollout_controller.pack_iterator(
                     all_data_points,
-                    text_advantages=text_advantages,
-                    image_advantages=image_advantages,
+                    text_advantages=None,
+                    image_advantages=None,
                     cfg_interval=training_args.cfg_interval,
+                    defer_advantages=True,
                 ),
                 total=1,
                 desc=f"Gradient Accumulation [{total_text_grad_tokens} Text Tokens, {total_image_num} Images]",
             )
         ):
-            # repeat advantages to match the length of label_ids
-            cur_text_advantages = loss_info.get("text_advantages", None)
-            cur_image_advantages = loss_info.get("image_advantages", None)
             behavior_probs = loss_info.get("inference_probs", None)
             label_ids = loss_info.get("packed_label_ids", None)
             # Step 4: training model with the packed data
             # Forward pass with mixed precision
             loss = 0
             with torch.amp.autocast("cuda", enabled=True, dtype=torch.bfloat16):
+                # The reference and the policy attend with the same packed layout: build the
+                # flex-attention block mask once (outside inference mode) and pass it to both.
+                shared_inputs = {}
+                if packed_input.get("nested_attention_masks") is None:
+                    shared_inputs["nested_attention_masks"] = fsdp_model.build_block_mask(
+                        packed_input["sample_lens"], packed_input["split_lens"], packed_input["attn_modes"],
+                        torch.device("cuda", torch.cuda.current_device()),
+                    )
+                reuse_vit = share_frozen_vit and packed_input.get("vit_token_seqlens") is not None
                 # Compute ref model logits
                 with torch.inference_mode():
                     if (training_args.kl_weight_text > 0 or training_args.kl_weight_image > 0): # forward ref model for text kl loss
-                        ref_loss_dict = ref_model(**packed_input, ref_forward=True)
+                        ref_loss_dict = ref_model(**packed_input, **shared_inputs, ref_forward=True,
+                                                  return_vit_embed=reuse_vit)
                         ref_per_token_logps = (
                             ref_loss_dict["logits"]
                             .log_softmax(dim=-1)
@@ -1223,7 +1255,22 @@ def main():
                 for ref_fsdp_module in reversed(ref_fsdp_modules):
                     ref_fsdp_module.reshard()
 
-                output_dict = fsdp_model(**packed_input)
+                if reuse_vit and ref_model is not None and ref_loss_dict.get("vit_embed") is not None:
+                    # outside inference mode: a normal (bit-identical) copy usable by autograd
+                    shared_inputs["precomputed_vit_embed"] = ref_loss_dict.pop("vit_embed").clone()
+                output_dict = fsdp_model(**packed_input, **shared_inputs)
+                del shared_inputs
+            if rewards_pending:
+                text_advantages, image_advantages, additional_stats = finish_rewards_and_advantages(
+                    inference_results, curr_step, training_args, rollout_buffer, metadata,
+                    last_reward if curr_step % training_args.rounds != 0 else None,
+                    rollout_batch_size, current_policy_group, logger,
+                )
+                rewards_pending = False
+            rollout_controller.fill_deferred_advantages(loss_info, text_advantages, image_advantages, "cuda")
+            # repeat advantages to match the length of label_ids
+            cur_text_advantages = loss_info.get("text_advantages", None)
+            cur_image_advantages = loss_info.get("image_advantages", None)
             if training_args.tune_text_cot:
                 raw_per_token_logps = (
                     output_dict["logits"]
@@ -1362,6 +1409,13 @@ def main():
                 loss = loss + img_loss * training_args.mse_weight + kl_img_loss * training_args.kl_weight_image
             # Backward pass
             loss.backward()
+        if rewards_pending:  # no packed batch on this rank: rewards/advantages still run (same collectives)
+            text_advantages, image_advantages, additional_stats = finish_rewards_and_advantages(
+                inference_results, curr_step, training_args, rollout_buffer, metadata,
+                last_reward if curr_step % training_args.rounds != 0 else None,
+                rollout_batch_size, current_policy_group, logger,
+            )
+            rewards_pending = False
         # Gradient clipping and optimization step
         total_norm = clip_grad_norm_fsdp2(
             [param for param in fsdp_model.parameters() if param.requires_grad],

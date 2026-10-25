@@ -3,6 +3,7 @@
 import torch
 
 from .qwen2_navit import _static_kv_host_meta
+from . import graph_capture
 
 
 class StaticTextGraph:
@@ -88,8 +89,7 @@ class StaticTextGraph:
             graph = torch.cuda.CUDAGraph()
             current = torch.cuda.current_stream()
             self.stream.wait_stream(current)
-            with torch.cuda.graph(graph, stream=self.stream):
-                entry['output'] = self._forward(entry)
+            entry['output'] = graph_capture.capture(graph, self.stream, lambda: self._forward(entry))
             current.wait_stream(self.stream)
             entry['graph'] = graph
             self.captures += 1

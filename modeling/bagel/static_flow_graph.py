@@ -3,6 +3,8 @@
 import torch
 import torch.distributed as dist
 
+from . import graph_capture
+
 from .qwen2_navit import (
     StaticKVCache,
     _mot_inference_layout,
@@ -114,35 +116,46 @@ class StaticFlowGraph:
             self.entries[key] = entry
             self.eager_calls += 1
             # Initialize kernels with the first real call, never extra warmup.
-            return self.language_model.forward_inference(**inputs)
+            output = self.language_model.forward_inference(**inputs)
+            # Record the graph right after launching that call: capture executes no kernels, so it runs on the
+            # host while the GPU still works on the eager call, and the next step can already replay every
+            # branch concurrently. The graph is identical to one captured at the next call (same inputs dict,
+            # buffers and validated layout).
+            self._capture(entry, cache, sequence.device)
+            return output
 
         inputs = entry['inputs']
         inputs['packed_query_sequence'].copy_(sequence)
         if entry['graph'] is None:
-            # Re-establish this entry's original integer KV packing outside
-            # capture. Every layer still reads its actual K/V tensor values.
-            entry['kv_meta'], entry['packing'] = _static_kv_packing_meta(
-                cache, inputs['query_lens'], None, sequence.device,
-            )
-            # Separate capture streams keep library workspaces independent
-            # when these private graphs are later replayed concurrently.
-            entry['stream'] = torch.cuda.Stream(device=sequence.device)
-            graph = torch.cuda.CUDAGraph()
-            current = torch.cuda.current_stream()
-            entry['stream'].wait_stream(current)
-            with torch.cuda.graph(graph, stream=entry['stream']):
-                entry['output'] = self.language_model.forward_inference(**inputs)
-            current.wait_stream(entry['stream'])
-            entry['graph'] = graph
-            self.captures += 1
+            self._capture(entry, cache, sequence.device)
         # Capture records operations; execute exactly once for this real call.
         entry['graph'].replay()
         self.replays += 1
         return entry['output']
+
+    def _capture(self, entry, cache, device):
+        inputs = entry['inputs']
+        # Re-establish this entry's original integer KV packing outside
+        # capture. Every layer still reads its actual K/V tensor values.
+        entry['kv_meta'], entry['packing'] = _static_kv_packing_meta(
+            cache, inputs['query_lens'], None, device,
+        )
+        # Separate capture streams keep library workspaces independent
+        # when these private graphs are later replayed concurrently.
+        entry['stream'] = torch.cuda.Stream(device=device)
+        graph = torch.cuda.CUDAGraph()
+        current = torch.cuda.current_stream()
+        entry['stream'].wait_stream(current)
+        entry['output'] = graph_capture.capture(
+            graph, entry['stream'], lambda: self.language_model.forward_inference(**inputs))
+        current.wait_stream(entry['stream'])
+        entry['graph'] = graph
+        self.captures += 1
 
     def report(self):
         rank = dist.get_rank() if dist.is_initialized() else 0
         print(f"[static-flow-graph rank={rank}] eager={self.eager_calls} "
               f"captures={self.captures} replays={self.replays} "
               f"parallel_groups={self.parallel_groups} "
-              f"parallel_replays={self.parallel_replays}", flush=True)
+              f"parallel_replays={self.parallel_replays} "
+              f"capture_prep[{graph_capture.report()}]", flush=True)

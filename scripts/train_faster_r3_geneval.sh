@@ -1,13 +1,13 @@
 #!/bin/bash
-# Faster-R3: the measured 4-GPU GenEval recipe (docs/training.md#launch).
-# The optimizations need no switches; run this script on the `upstream` branch for the baseline.
+# Faster-R3: the measured 8-GPU GenEval recipe (docs/training.md#launch).
+# Optimizations are enabled by default. Set R3_SOURCE_TREE to an upstream checkout for the baseline.
 # Needs the GenEval reward server at REWARD_URL (scripts/reward/gunicorn_geneval.py).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 MODEL_PATH="${MODEL_PATH:?set MODEL_PATH to the BAGEL-7B-MoT checkpoint directory}"
 LOG_DIR="${LOG_DIR:-./output}"
-NPROC_PER_NODE="${NPROC_PER_NODE:-4}"
+NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
 NUM_SHARD="${NUM_SHARD:-${NPROC_PER_NODE}}"
 MASTER_ADDR="${MASTER_ADDR:-localhost}"
 MASTER_PORT="${MASTER_PORT:-29509}"
@@ -18,16 +18,22 @@ GLOBAL_SEED="${GLOBAL_SEED:-4396}"
 TRAIN_DATA_PATH="${TRAIN_DATA_PATH:-./data/rl_train/train_geneval.jsonl}"
 VAL_DATA_PATH="${VAL_DATA_PATH:-}"
 
+# Both measured sides use ZeRO-3 and this identical loading adaptation.
+export R3_LOAD_CONCURRENCY="${R3_LOAD_CONCURRENCY:-8}"
+if (( NPROC_PER_NODE != 8 || NUM_SHARD != 8 )); then
+  echo "This launcher reproduces the measured 8-rank / 8-shard setup." >&2
+  exit 2
+fi
 mkdir -p "${LOG_DIR}"
 if [[ -z "${VAL_DATA_PATH}" ]]; then
-  # The measured runs evaluated on the first 4 prompts of the GenEval test split (step 0 and every 50 steps).
-  VAL_DATA_PATH="${LOG_DIR}/geneval_eval_first4.jsonl"
-  head -n 4 data/rl_test/test_geneval.jsonl > "${VAL_DATA_PATH}"
+  # The measured runs evaluated on the first NPROC_PER_NODE prompts of the GenEval test split (step 0 and every 50 steps).
+  VAL_DATA_PATH="${LOG_DIR}/geneval_eval_first${NPROC_PER_NODE}.jsonl"
+  head -n "${NPROC_PER_NODE}" data/rl_test/test_geneval.jsonl > "${VAL_DATA_PATH}"
 fi
 
 exec torchrun --nnodes=1 --nproc_per_node="${NPROC_PER_NODE}" \
   --master_addr="${MASTER_ADDR}" --master_port="${MASTER_PORT}" \
-  train/online_rl.py \
+  scripts/h100_entry.py \
   --dataset_name geneval \
   --llm_path "${MODEL_PATH}/llm_config.json" \
   --vae_path "${MODEL_PATH}/ae.safetensors" \

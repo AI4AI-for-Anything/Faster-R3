@@ -128,6 +128,10 @@ class Bagel(PreTrainedModel):
         packed_timesteps: Optional[torch.LongTensor] = None,
         mse_loss_indexes: Optional[torch.BoolTensor] = None,
         ref_forward: Optional[bool] = False,
+        precomputed_vit_embed: Optional[torch.Tensor] = None,
+        return_vit_embed: bool = False,
+        packed_und_live_segments: Optional[tuple] = None,
+        packed_gen_live_segments: Optional[tuple] = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -153,32 +157,38 @@ class Bagel(PreTrainedModel):
             packed_vae_token_indexes: 1-D int tensor, padded image token indexes in sequence.
             packed_timesteps: 1-D float tensor, flow timesteps. 0 indicates use clean image.
             mse_loss_indexes: 1-D bool tensor, where to compute mse loss.
+            precomputed_vit_embed: optional frozen-ViT output (pre-connector) for exactly these
+                packed_vit_* inputs, computed by an identical frozen ViT; skips the ViT forward.
+            return_vit_embed: also return the ViT output (pre-connector) as "vit_embed".
+            packed_und_live_segments / packed_gen_live_segments: optional (start, end) row segments of the
+                und / gen expert token lists that any output can depend on (rows of dead samples are
+                skipped by the expert GEMMs; the packed layout and all token reductions keep their shapes).
         """
         packed_text_embedding = self.language_model.model.embed_tokens(packed_text_ids)
         packed_sequence = packed_text_embedding.new_zeros(size=(sequence_length, self.hidden_size))
         packed_sequence[packed_text_indexes] = packed_text_embedding
 
         if nested_attention_masks is None:
-            sparse_mask = create_sparse_mask(sample_lens, split_lens, attn_modes, packed_text_embedding.device)
-            seqlen = sum(sample_lens)
-            block_mask = create_block_mask(
-                sparse_mask, B=1, H=self.num_heads, Q_LEN=seqlen, KV_LEN=seqlen, 
-                device=packed_text_embedding.device, BLOCK_SIZE=128, _compile=True,
-            )
-            attention_mask = block_mask
+            attention_mask = self.build_block_mask(sample_lens, split_lens, attn_modes, packed_text_embedding.device)
         else:
             attention_mask = nested_attention_masks
 
+        vit_embed = None
         if self.config.visual_und and vit_token_seqlens is not None:
-            cu_seqlens = torch.nn.functional.pad(torch.cumsum(vit_token_seqlens, dim=0), (1, 0))
-            cu_seqlens = cu_seqlens.to(torch.int32)
-            max_seqlen = torch.max(vit_token_seqlens).item()
-            packed_vit_token_embed = self.vit_model(
-                packed_pixel_values=packed_vit_tokens, 
-                packed_flattened_position_ids=packed_vit_position_ids,
-                cu_seqlens=cu_seqlens,
-                max_seqlen=max_seqlen,
-            )
+            if precomputed_vit_embed is not None:
+                packed_vit_token_embed = precomputed_vit_embed
+            else:
+                cu_seqlens = torch.nn.functional.pad(torch.cumsum(vit_token_seqlens, dim=0), (1, 0))
+                cu_seqlens = cu_seqlens.to(torch.int32)
+                max_seqlen = torch.max(vit_token_seqlens).item()
+                packed_vit_token_embed = self.vit_model(
+                    packed_pixel_values=packed_vit_tokens, 
+                    packed_flattened_position_ids=packed_vit_position_ids,
+                    cu_seqlens=cu_seqlens,
+                    max_seqlen=max_seqlen,
+                )
+            if return_vit_embed:
+                vit_embed = packed_vit_token_embed
             packed_vit_token_embed = self.connector(packed_vit_token_embed)
             vit_token_pos_emb = self.vit_pos_embed(packed_vit_position_ids)
             packed_vit_token_embed = packed_vit_token_embed + vit_token_pos_emb
@@ -218,6 +228,10 @@ class Bagel(PreTrainedModel):
                 packed_gen_token_indexes=packed_vae_token_indexes,
                 ref_forward=ref_forward,
             )
+            if packed_und_live_segments is not None:
+                extra_inputs.update(packed_und_live_segments=packed_und_live_segments)
+            if packed_gen_live_segments is not None:
+                extra_inputs.update(packed_gen_live_segments=packed_gen_live_segments)
 
         last_hidden_state = self.language_model(
             packed_sequence=packed_sequence,
@@ -252,7 +266,17 @@ class Bagel(PreTrainedModel):
             "packed_mse_preds": packed_mse_preds,
             "packed_timesteps": return_packed_timesteps,
         }
+        if return_vit_embed:
+            output_dict["vit_embed"] = vit_embed
         return output_dict
+
+    def build_block_mask(self, sample_lens, split_lens, attn_modes, device):
+        sparse_mask = create_sparse_mask(sample_lens, split_lens, attn_modes, device)
+        seqlen = sum(sample_lens)
+        return create_block_mask(
+            sparse_mask, B=1, H=self.num_heads, Q_LEN=seqlen, KV_LEN=seqlen, 
+            device=device, BLOCK_SIZE=128, _compile=True,
+        )
 
 
     def prepare_prompts(self, curr_kvlens, curr_rope, prompts, tokenizer, new_token_ids):
@@ -713,11 +737,13 @@ class Bagel(PreTrainedModel):
         dts =  timesteps[:-1] - timesteps[1:]
         timesteps = timesteps[:-1]
 
+        # The same scalar comparisons as `t > lo and t <= hi`, read to the host once instead of once per step.
+        cfg_active = ((timesteps > cfg_interval[0]) & (timesteps <= cfg_interval[1])).tolist()
         for i, t in enumerate(timesteps):
 
             # Materialize identical values without converting the CUDA scalar per token.
             timestep = t.expand(x_t.shape[0]).clone(memory_format=torch.contiguous_format)
-            if t > cfg_interval[0] and t <= cfg_interval[1]:
+            if cfg_active[i]:
                 cfg_text_scale_ = cfg_text_scale
                 cfg_img_scale_ = cfg_img_scale
             else:
@@ -754,6 +780,7 @@ class Bagel(PreTrainedModel):
                 cfg_img_packed_key_value_indexes=cfg_img_packed_key_value_indexes,
                 cfg_type=cfg_type,
                 flow_graph=flow_graph,
+                timestep_uniform=True,
             )
 
             x_t = x_t - v_t * dts[i] # velocity pointing from data to noise
@@ -810,11 +837,13 @@ class Bagel(PreTrainedModel):
         latents = [x_t]
         log_probs = []
 
+        # The same scalar comparisons as `t > lo and t <= hi`, read to the host once instead of once per step.
+        cfg_active = ((timesteps > cfg_interval[0]) & (timesteps <= cfg_interval[1])).tolist()
         for i, t in enumerate(timesteps):
 
             # Materialize identical values without converting the CUDA scalar per token.
             timestep = t.expand(x_t.shape[0]).clone(memory_format=torch.contiguous_format)
-            if t > cfg_interval[0] and t <= cfg_interval[1]:
+            if cfg_active[i]:
                 cfg_text_scale_ = cfg_text_scale
                 cfg_img_scale_ = cfg_img_scale
             else:
@@ -851,6 +880,7 @@ class Bagel(PreTrainedModel):
                 cfg_img_packed_key_value_indexes=cfg_img_packed_key_value_indexes,
                 cfg_type=cfg_type,
                 flow_graph=flow_graph,
+                timestep_uniform=True,
             )
             x_t, log_prob = sde_sampler.step(x_t, t, dts[i], v_t)
             # TODO: move to cpu
@@ -915,6 +945,8 @@ class Bagel(PreTrainedModel):
         log_probs = []
         timesteps_for_sde = []
         dts_for_sde = []
+        # The same scalar comparisons as `t > lo and t <= hi`, read to the host once instead of once per step.
+        cfg_active = ((timesteps > cfg_interval[0]) & (timesteps <= cfg_interval[1])).tolist()
 
         for i, t in enumerate(timesteps):
             if sde_timesteps_idx is not None and i == sde_timesteps_idx[0]:
@@ -922,7 +954,7 @@ class Bagel(PreTrainedModel):
 
             # Materialize identical values without converting the CUDA scalar per token.
             timestep = t.expand(x_t.shape[0]).clone(memory_format=torch.contiguous_format)
-            if t > cfg_interval[0] and t <= cfg_interval[1]:
+            if cfg_active[i]:
                 cfg_text_scale_ = cfg_text_scale
                 cfg_img_scale_ = cfg_img_scale
             else:
@@ -959,6 +991,7 @@ class Bagel(PreTrainedModel):
                 cfg_img_packed_key_value_indexes=cfg_img_packed_key_value_indexes,
                 cfg_type=cfg_type,
                 flow_graph=flow_graph,
+                timestep_uniform=True,
             )
             is_sde = i in sde_timesteps_idx
             if is_sde:
@@ -1019,13 +1052,17 @@ class Bagel(PreTrainedModel):
         cfg_img_packed_key_value_indexes: Optional[torch.LongTensor] = None,
         cfg_type: str = "parallel",
         flow_graph=None,
+        timestep_uniform: bool = False,
     ):
         forward_inference = self.language_model.forward_inference if flow_graph is None else flow_graph
         packed_text_embedding = self.language_model.model.embed_tokens(packed_text_ids)
         packed_sequence = packed_text_embedding.new_zeros((sum(packed_seqlens), self.hidden_size))
         packed_sequence[packed_text_indexes] = packed_text_embedding
 
-        assert timestep.unique().shape[0] == 1
+        # Callers passing timestep_uniform built `timestep` as one scalar expanded per token (uniform by
+        # construction), so the device->host check would only stall the queue.
+        if not timestep_uniform:
+            assert timestep.unique().shape[0] == 1
         packed_pos_embed = self.latent_pos_embed(packed_vae_position_ids)
         packed_timestep_embeds = self.time_embedder(timestep)
         x_t = self.vae2llm(x_t) + packed_timestep_embeds + packed_pos_embed
@@ -1296,6 +1333,102 @@ class Bagel(PreTrainedModel):
         next_tokens_probs = probs.gather(-1, sampled_indices).squeeze(-1)
         return next_tokens, next_tokens_probs
 
+    def _decode_static_pipelined(self, steps, curr_tokens, packed_query_position_ids, past_key_values, max_length,
+                                 end_token_id, decode_graph, sampling_graph, generated_sequence, generated_probs):
+        """The static-KV graph decode loop with its host reads one token behind the device.
+
+        Each step enqueues exactly the original device work (gather, embedding, backbone replay, seq_lens
+        advance, head/sampler replay, continuing-row token and position writes) in the original order, so all
+        floating-point results and RNG offsets are unchanged. Only the termination control moves: a row stops
+        after the step whose *input* token is EOS, and that input is the token sampled one step earlier, so
+        the active set for the next step is known from the previous step's samples, read through pinned copies
+        while the current step runs. Python lists receive the same values in the same per-row order.
+        """
+        device = curr_tokens.device
+        batch_size = curr_tokens.size(0)
+        token_slots = torch.empty((max_length + 2, batch_size), dtype=curr_tokens.dtype, device='cpu',
+                                  pin_memory=True)
+        prob_slots = None
+        # Step 0's inputs are the start tokens themselves.
+        token_slots[max_length + 1].copy_(curr_tokens, non_blocking=True)
+        start_event = torch.cuda.Event()
+        start_event.record()
+        active_host = list(range(batch_size))
+        active_dev = torch.arange(batch_size, device=device)
+        pending = None  # (step, active rows of that step, event after its sampled values were copied)
+
+        for step in steps:
+            if not active_host:
+                break
+            n = len(active_host)
+            active_curr_tokens = curr_tokens[active_dev]
+            active_packed_query_position_ids = packed_query_position_ids[active_dev]
+            packed_text_embedding = self.language_model.model.embed_tokens(active_curr_tokens)
+            query_lens_for_model = torch.ones_like(active_curr_tokens)
+            output = decode_graph(
+                packed_text_embedding, query_lens_for_model, active_packed_query_position_ids, active_dev,
+            )
+            past_key_values = output.past_key_values
+            past_key_values.advance_seq_lens(1, active_dev)
+            next_tokens, next_tokens_probs = sampling_graph(output.packed_query_sequence)
+
+            # Sampled values of this step, before any forced-EOS write, as the original host read saw them.
+            if prob_slots is None:
+                prob_slots = torch.empty((max_length + 1, batch_size), dtype=next_tokens_probs.dtype,
+                                         device='cpu', pin_memory=True)
+            token_slots[step, :n].copy_(next_tokens, non_blocking=True)
+            prob_slots[step, :n].copy_(next_tokens_probs, non_blocking=True)
+            event = torch.cuda.Event()
+            event.record()
+
+            # Host values of this step's input tokens (and the previous step's probabilities).
+            if pending is None:
+                start_event.synchronize()
+                inputs_host = token_slots[max_length + 1, :n].tolist()
+            else:
+                prev_step, prev_active, prev_event = pending
+                prev_event.synchronize()
+                prev_tokens = token_slots[prev_step, :len(prev_active)].tolist()
+                prev_probs = prob_slots[prev_step, :len(prev_active)].tolist()
+                prev_position = {original: i for i, original in enumerate(prev_active)}
+                inputs_host = []
+                for original in active_host:
+                    i = prev_position[original]
+                    generated_probs[original].append(prev_probs[i])
+                    inputs_host.append(end_token_id if prev_step == max_length - 1 else prev_tokens[i])
+
+            continuing = []
+            for i, original in enumerate(active_host):
+                generated_sequence[original].append(inputs_host[i])
+                if inputs_host[i] != end_token_id:
+                    continuing.append(i)
+
+            continuing_dev = active_dev
+            if continuing:
+                if len(continuing) == n:
+                    if step == max_length - 1:
+                        next_tokens.fill_(end_token_id)
+                    curr_tokens[active_dev] = next_tokens
+                else:
+                    positions = torch.tensor(continuing, dtype=torch.long, device='cpu').pin_memory().to(
+                        device, non_blocking=True)
+                    continuing_dev = active_dev[positions]
+                    if step == max_length - 1:
+                        next_tokens[positions] = end_token_id
+                    curr_tokens[continuing_dev] = next_tokens[positions]
+                packed_query_position_ids[continuing_dev] += 1
+            pending = (step, active_host, event)
+            active_host = [active_host[i] for i in continuing]
+            active_dev = continuing_dev
+
+        if pending is not None and active_host:
+            prev_step, prev_active, prev_event = pending
+            prev_event.synchronize()
+            prev_probs = prob_slots[prev_step, :len(prev_active)].tolist()
+            prev_position = {original: i for i, original in enumerate(prev_active)}
+            for original in active_host:
+                generated_probs[original].append(prev_probs[prev_position[original]])
+
     @torch.no_grad
     def generate_text_batch(
         self,
@@ -1342,6 +1475,12 @@ class Bagel(PreTrainedModel):
                 self, do_sample, temperature, topk, top_p, generator,
             )
         tqdm_iter = tqdm(range(max_length+1), desc="Thinking...", disable=not (dist.is_initialized() and dist.get_rank() == 0)) # TODO: add one
+        if decode_graph is not None and sampling_graph is not None:
+            self._decode_static_pipelined(
+                tqdm_iter, curr_tokens, packed_query_position_ids, past_key_values, max_length, end_token_id,
+                decode_graph, sampling_graph, generated_sequence, generated_probs,
+            )
+            tqdm_iter = ()
         for step in tqdm_iter:
             if not active_sequences_original_indices.numel() > 0:
                 break

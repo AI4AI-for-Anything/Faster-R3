@@ -1,0 +1,39 @@
+{
+  "date": "2026-10-25",
+  "runtime_source_commit": "1367ad7e2952795d74447ce4c7a4b6dc13c27afb",
+  "hardware": "NVIDIA H100 80GB HBM3",
+  "torch": "2.9.1+cu128",
+  "checks": {
+    "training_fused_operators": {
+      "cases": 37,
+      "all_rms": true,
+      "all_rope": true,
+      "swiglu_contract_ok": {
+        "0": true,
+        "1": true
+      }
+    },
+    "flow_units": {
+      "cases": 169,
+      "all_bitwise": true
+    },
+    "runtime_source_hashes": 37,
+    "aggregate_round_records": 10,
+    "launcher_dry_run": "PASS",
+    "reward_configuration_hooks": "PASS",
+    "loading_adapter_ast_matches_measured": "PASS",
+    "python_syntax": "PASS",
+    "private_path_and_secret_scan": "PASS",
+    "figure_visual_inspection": "PASS"
+  },
+  "diagnostic_files": {
+    "tools/fuse_train/test_fused_ops.py": "40fb39dc23a9e8a129012b96f85b5825ad58a800f09ad4df5f399dfe2d37a244",
+    "tools/fuse_flow/fusetest.py": "7b29ab2e8e488761c8c02930695fb24a9156ee900bc0ec8efb481c08a6a8a555",
+    "tools/fuse_flow/flowlib.py": "e1ab20771ed400900acc98881e6190944f96b635b4f35bee7dbece62ed8d702b"
+  },
+  "limits": [
+    "The GPU checks ran the published portable diagnostic scripts against the byte-identical measured runtime snapshot.",
+    "No new full eight-rank training or timing run was performed for publication.",
+    "Text-decode capture-dependent diagnostics and the long-training quality protocol were not rerun."
+  ]
+}

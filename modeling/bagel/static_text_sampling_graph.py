@@ -3,6 +3,8 @@
 import torch
 import torch.nn.functional as F
 
+from . import graph_capture
+
 
 class StaticTextSamplingGraph:
     def __init__(self, model, do_sample, temperature, topk, top_p, generator):
@@ -56,8 +58,7 @@ class StaticTextSamplingGraph:
                 graph.register_generator_state(self.generator)
             current = torch.cuda.current_stream()
             self.stream.wait_stream(current)
-            with torch.cuda.graph(graph, stream=self.stream):
-                entry['output'] = self._forward(entry['hidden'])
+            entry['output'] = graph_capture.capture(graph, self.stream, lambda: self._forward(entry['hidden']))
             current.wait_stream(self.stream)
             entry['graph'] = graph
             self.captures += 1

@@ -1,17 +1,22 @@
-"""gunicorn config for the Flow-GRPO GenEval reward server (github.com/yifan123/reward-server), as measured.
+"""Measured faster GenEval server: eight workers, four CPU threads each.
 
-Four synchronous workers, one on each of the four training GPUs, on 127.0.0.1:18085. Run from the reward-server
-checkout:  gunicorn -c /path/to/Faster-R3/scripts/reward/gunicorn_geneval.py "app_geneval:create_app()"
-Set R3_REWARD_GPUS (default 4) and R3_REWARD_BIND to change the worker count or the address.
+The reward model, weights, crop order and scoring arithmetic are unchanged.
+Colour crops are loaded in-process instead of forking four workers per request.
+Run from the upstream reward-server checkout; do not enable gunicorn preload.
 """
 import os
+import socket
 
-NUM_DEVICES = int(os.environ.get("R3_REWARD_GPUS", "4"))
+NUM_DEVICES = int(os.environ.get("R3_REWARD_GPUS", "8"))
 USED_DEVICES = set()
 bind = os.environ.get("R3_REWARD_BIND", "127.0.0.1:18085")
 workers = NUM_DEVICES
 worker_class = "sync"
 timeout = 120
+
+PER_GPU_PORT_BASE = 0           # off in harness v1 (per-rank routing measured: no gain once the server is fast)
+WORKER_THREADS = "4"             # 8 workers x 4 = 32 OpenMP threads on the measured host
+COLOR_LOADER_WORKERS = 0         # build colour crops in-process (no 4-process fork per colour check)
 
 
 def pre_fork(server, worker):
@@ -21,6 +26,30 @@ def pre_fork(server, worker):
 
 def post_fork(server, worker):
     os.environ["CUDA_VISIBLE_DEVICES"] = str(worker.device_id)
+    if WORKER_THREADS:
+        os.environ["OMP_NUM_THREADS"] = WORKER_THREADS
+        os.environ["MKL_NUM_THREADS"] = WORKER_THREADS
+    if COLOR_LOADER_WORKERS is not None:
+        import torch.utils.data as tud
+        base = tud.DataLoader
+
+        class ColorCropLoader(base):
+            def __init__(self, *args, **kwargs):
+                kwargs["num_workers"] = COLOR_LOADER_WORKERS
+                super().__init__(*args, **kwargs)
+
+        tud.DataLoader = ColorCropLoader   # gen_eval resolves torch.utils.data.DataLoader at call time
+
+
+def post_worker_init(worker):
+    if PER_GPU_PORT_BASE:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", PER_GPU_PORT_BASE + worker.device_id))
+        s.listen(128)
+        s.setblocking(0)
+        worker.sockets.append(s)
+        worker.wait_fds = worker.sockets + [worker.PIPE[0]]
 
 
 def child_exit(server, worker):

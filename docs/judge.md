@@ -1,95 +1,88 @@
-# The judge
+# Eight-GPU judge and evidence
 
-Every speedup in this repository comes from a frozen **bit-exact bench**, fixed before the first optimization round
-and used unchanged for all of them. Only changes that leave every recorded number identical could pass it, so no
-statistical tolerance is involved. The bench (scripts, launch rules and baseline records) is a separate artifact and
-is not included; this page describes what it checks.
+The current result uses the original bitwise comparison and paired timing rules, ported to eight H100 GPUs.
+Baseline records were regenerated on that host; the old four-GPU records are never used as numerical targets
+or timing denominators. The historical account is [judge-4gpu.md](judge-4gpu.md).
 
-## What is compared
+## Two comparison scopes
 
-- **Baseline:** the unmodified upstream tree (branch `upstream`, sen-ye/R3 at `761b0b0`).
-- **Candidate:** an immutable snapshot of the optimized tree. The source digest of the tree (see
-  [training.md](training.md#verifying-the-tree)) is taken when the job is formed and again after it ends; a change
-  in between fails the run.
-- **Recipe:** the arguments of [training.md](training.md#launch), one environment for both trees. The recipe file,
-  the validation fixture and the verification records of the model, the environment, the reward server and its
-  CLIP weights are hashed at the start and the end of every run.
-- **Entry:** the bench imports the tree's own `train.online_rl` and calls its unchanged `main()` with the recipe as
-  `sys.argv`, under `torchrun` with 4 processes. It only observes: an optimizer post-step hook reads the trainer's
-  local variables, and a wrapper around `wandb.log` was meant to record rank 0's logged values. A run stops at a
-  barrier after its last step.
-- **Launch:** every run is a fresh launch: a host-wide GPU lock, an idle check of the 4 GPUs (no compute process,
-  0% utilization, at most 256 MiB used, sampled five times), a check of the reward server's offline caches, the four
-  GenEval workers on the same GPUs, then one `torchrun`. A run whose GPUs are not idle is refused, not retried with
-  looser rules.
+| Round | Baseline configuration | Candidate configuration | Minimum ratio |
+|---|---|---|---:|
+| `fusion_b_total2` | Upstream + original reward service | fusion_b + faster reward service | **2.083129×** |
+| `fusion_b_r` | Upstream + faster reward service | fusion_b + faster reward service | **1.880298×** |
+
+Both sides use eight ranks, eight shards, the same ZeRO-3/loading adapter, public model and GenEval prompts,
+seeds 4396 / 42, and eight-prompt step-0 evaluation fixture. Reward model/weights and scoring semantics do not
+change. The faster service limits CPU threads and loads colour crops in-process. The full speedup includes this
+execution change. It was measured directly, not inferred from separate service and training gains.
 
 ## Bitwise check
 
-The bench sets the flags; the tree's code path is the same in both modes.
+Two upstream baseline runs first reproduced one another on this host. The candidate then ran deterministic
+steps 0–13 (seven generate and seven refine steps). The following match on **all eight ranks**:
 
-- **Mode:** `seed_everything(4396)`, deterministic flags and `torch.use_deterministic_algorithms(True)`.
-- **Length:** steps 0–13 from the released checkpoint (7 generate and 7 refine steps, including the step-0
-  evaluation and the 10-step learning-rate warm-up).
-- **Recorded per step and rank:** the raw text and image losses, the trainer's additional statistics, the gradient
-  norm before clipping, the learning rate of every parameter group, the SHA-256 of the rollout token ids, the token
-  counts, the SHA-256 of every generated image, the GenEval rewards (scores, totals, format rewards), and the text and
-  image advantages.
-- **Recorded after the last step:** the SHA-256 of every local parameter shard and of every Adam state tensor of the
-  FSDP2 model, and one digest over all of them.
+- raw text/image losses and collected training statistics;
+- rollout token hashes/counts and generated-image hashes;
+- GenEval scores, total/format rewards, text/image advantages;
+- gradient norm before clipping and learning rates;
+- final SHA-256 digests of local parameter shards and every Adam state tensor.
 
-The candidate is **identical** only if every per-step record of every rank and the final digests equal those of
-the baseline record, and rank 0's logged values agree (excluding `step_time`, `mem_allocated` and `mem_cache`).
-Before any round, two baseline runs on the host had to be identical to each other; they were (final rank-0 digest
-`c2b02b63537fc5576515f96744058e5799e6a1fb996516560558b846983d2175`). Every round is compared with the first of them.
+Both final rounds are `identical=true`, with no differences. Rank-0 final parameter/Adam digest is
+`7ee0e76bcc53ddd6b5b8d905bb99a861302d2bba9829699f101a43bd99f4d41a`.
+The candidate source is fingerprinted before and after execution. Current runtime file hashes were checked
+against the immutable `fusion_b` snapshot and are included in [h100.json](validation/h100.json).
+
+**Known wandb gap:** the initialization of wandb replaces the earlier logging hook. Rank-0 logged lists were
+empty for both sides. Direct per-rank training observations remain checked, but values available only through
+wandb, including step-0 evaluation scores, were not compared. This gap is not a numerical pass on those values.
 
 ## Timing
 
-Only identical candidates are timed: baseline A → candidate → baseline B, each a fresh launch on the same host in
-the same session, with production settings (no deterministic flags), 16 steps each.
+Each round runs baseline A → candidate → baseline B as independent launches on the same host, using production
+settings. Each launch has 16 steps; steps 0–9 warm up, and windows 10–11, 12–13 and 14–15 each contain a generate
+and a refine step. The optimizer post-step observer synchronizes CUDA; the slowest rank determines time.
 
-- The end of each step is taken at the optimizer post-step hook after `torch.cuda.synchronize()`; the slowest
-  rank counts.
-- Steps 0–9 are warm-up (they include start-up and the step-0 evaluation). Three
-  windows cover steps 10–11, 12–13 and 14–15, each one generate and one refine step; seconds per step = window
-  time / 2.
-- Per window, ratio = min(baseline A, baseline B) / candidate. **Speedup = the smallest of the three ratios.**
-- Baseline spread = the largest relative difference between baseline A and B over the windows. The round counts
-  only if speedup ≥ max(1.02, 1 + 2 × spread).
-- Timing is never compared with a stored number; every round times its own baselines.
+For each window, `ratio = min(baseline_A, baseline_B) / candidate`. The reported speedup is `min(ratios)`.
+Baseline spread is `max(abs(A-B) / min(A,B))`; the benefit threshold is `max(1.02, 1 + 2*spread)`.
 
-## Acceptance
+| Scope | Baseline A (s/step) | Candidate (s/step) | Baseline B (s/step) | Ratios |
+|---|---|---|---|---|
+| Total | 30.7326 / 25.8916 / 27.9101 | 11.9883 / 11.8666 / 12.2042 | 31.8582 / 24.7197 / 28.0978 | 2.5636 / **2.0831** / 2.2869 |
+| Training code only | 22.9874 / 23.2564 / 22.9266 | 12.1949 / 11.9496 / 11.9846 | 23.0628 / 22.4688 / 22.5615 | 1.8850 / **1.8803** / 1.8825 |
 
-| Case | Expected | Result |
-|---|---|---|
-| CPU tests of the bench: the launch rules are kept, flags are set only by the bench, the bitwise comparison ignores wall-clock fields and catches a changed loss, a changed final state and a changed logged value, the min-of-ratios arithmetic | all pass | all pass |
-| Baseline run twice on the host | identical | identical, 14 steps |
-| Unmodified upstream tree as the candidate (round 0) | identical, no benefit | identical; 0.9906× against a threshold of 1.0432 (ratios 1.0082, 1.0117, 0.9906; spread 2.2%) |
+Total spread is 4.7405%, threshold 1.0948×. Training-code-only spread is 3.5053%, threshold 1.0701×.
+Both pass. A first total attempt was interrupted by a reward-service file-read error; `fusion_b_total2` is the
+completed repeat, not an average with that failed attempt. All displayed values derive from completed round JSON.
 
-The round-0 control shows the noise of the timing: about ±1% per window with this spread. The bench files, the
-launch rules and the baseline records (17 files) were hashed before the first round and were unchanged when the
-work ended.
+## Memory
 
-## Known gap: wandb values
+Maxima over all eight ranks and the full 16-step launches, including warm-up. Baseline values take the larger
+of A and B. PyTorch allocator counters cover the trainer; device peaks also include reward workers and other
+CUDA overhead. Device peaks were sampled and can miss brief transients.
 
-The bench wrapped `wandb.log` before calling the trainer's `main()`, but wandb 0.30.0 rebinds `wandb.log` inside
-`wandb.init()`, so the wrapper never saw a call. This was found during round 2: the baseline records and the
-candidate records all hold an empty list, and the comparison of the logged values compared two empty lists. The
-supervisor of the run ruled the item redundant for acceptance, because the per-step losses, rewards, advantages,
-gradient norm, learning rates and the final parameter and Adam digests are compared directly, and every round was
-judged under that ruling. Values that exist only in the wandb log, such as the evaluation rewards of step 0, were not
-compared. Repairing the hook would have required new baseline records; it was
-not done.
+| Scope / implementation | Peak allocated GiB | Peak reserved GiB | Sampled peak device MiB |
+|---|---:|---:|---:|
+| Total / baseline | 67.19 | 72.20 | 80,165 |
+| Total / fusion_b | 68.21 | 72.94 | 80,953 |
+| Training-only / baseline | 67.20 | 72.38 | 80,351 |
+| Training-only / fusion_b | 68.25 | 72.94 | 80,953 |
 
-## Limits
+No final run reported OOM. There is little spare device memory. The old four-GPU 131.0 → 104.8 GiB reduction
+belongs to a different sharding setup and is not a claim for this release.
 
-- Bitwise identity was shown for 14 steps in deterministic mode. A change that alters numbers only later, or only
-  without the deterministic flags, would not be caught; the timing runs themselves are not compared.
-- The timing covers six steps per run after warm-up. It measures steady-state seconds per RL step, not the
-  wall-clock time of a full training run with evaluation and checkpoints.
-- Rounds are judged one at a time against fresh baselines; the speedups of two rounds are not a paired comparison.
-- The CUDA graphs live for one text or image call, so their captures recur in every step and are inside the timed
-  windows.
-- Everything ran on one host with 4 H200-class GPUs and the GenEval recipe.
+## Evidence and limits
 
-An earlier, statistical judge for this workload was built and then set aside when the work was restricted to
-bit-exact changes; none of its results are used here.
+[validation/h100.json](validation/h100.json) contains aggregate timing windows, numerical verdicts, memory
+maxima, source identity and a runtime-file hash manifest. Machine addresses, private paths, per-example data,
+model weights, reward traces and raw profiler artifacts are excluded. The original full-tree digest includes
+experiment tools and is not expected to equal a digest of this documentation-enriched release.
+
+The full frozen judge, baseline tensor records and launch orchestration remain external. Published GPU
+operator diagnostics are narrower checks, not replacements for that judge. The portable launch scripts have
+not been rerun end to end. Current publication checks establish source and evidence consistency, not a new
+benchmark run.
+
+Numerical identity covers only 14 deterministic steps. Timing uses production settings whose numerical values
+were not compared. Full training, save/resume, other datasets, hardware, dependency versions or GPU counts are
+not certified. The proposed 200-step / three-seed paired training and quality protocol has no completed result
+in this release. No time-to-quality or generalization claim follows from these short-run results.

@@ -17,6 +17,7 @@ from copy import deepcopy
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.nn.attention.flex_attention import flex_attention
 from torch.nn.functional import scaled_dot_product_attention
@@ -33,12 +34,80 @@ from modeling.qwen2.modeling_qwen2 import (
 )
 
 from modeling.qwen2.configuration_qwen2 import Qwen2Config as _Qwen2Config
+from modeling.bagel.fused_train_ops import rms_norm as _rms_norm, swiglu as _swiglu, apply_rotary as _apply_rotary
+import os as _os
+_SPLIT_RESIDUAL = _os.environ.get("R3_FUSE_TRAIN_SPLIT", "1") != "0"
+from . import fused_ops
 
 
 torch._dynamo.config.cache_size_limit = 512
 torch._dynamo.config.accumulated_cache_size_limit = 4096
 # flex_attention = torch.compile(flex_attention) # , dynamic=True, mode='max-autotune'
 flex_attention = torch.compile(flex_attention)
+
+
+def _gather_live(x, segments):
+    """Rows of x inside the (start, end) segments, concatenated (contiguous)."""
+    return torch.cat([x[start:end] for start, end in segments])
+
+
+def _scatter_live(live, segments, rows):
+    """Inverse of _gather_live: a rows-long matrix holding `live` in the segments and zeros elsewhere."""
+    pieces, pos, off = [], 0, 0
+    for start, end in segments:
+        if start > pos:
+            pieces.append(live.new_zeros((start - pos, live.shape[1])))
+        pieces.append(live[off:off + end - start])
+        off += end - start
+        pos = end
+    if pos < rows:
+        pieces.append(live.new_zeros((rows - pos, live.shape[1])))
+    return torch.cat(pieces)
+
+
+class _LiveRowsLinear(torch.autograd.Function):
+    """F.linear on the live rows (given as (start, end) segments) of a packed expert-token matrix;
+    the other (dead) rows of the output are zero.  Dead rows belong to samples no loss can read, so
+    their gradient is exactly zero in the reference graph.  Backward computes dx on the live rows
+    only, but dW/db exactly as autograd's addmm/mm backward does on the FULL row layout (dead grad
+    rows are zero, so the dead input rows contribute exact zeros): parameter-gradient reductions
+    keep the reference shape."""
+
+    @staticmethod
+    def forward(ctx, x, weight, bias, segments):
+        live = F.linear(_gather_live(x, segments), weight, bias)
+        ctx.save_for_backward(x, weight)
+        ctx.segments = segments
+        ctx.has_bias = bias is not None
+        return _scatter_live(live, segments, x.shape[0])
+
+    @staticmethod
+    def backward(ctx, grad):
+        x, weight = ctx.saved_tensors
+        grad_x = grad_w = grad_b = None
+        if ctx.needs_input_grad[0]:                   # mm_mat1_backward: grad.mm(mat2.t()), live rows
+            grad_x = _scatter_live(_gather_live(grad, ctx.segments).mm(weight), ctx.segments, grad.shape[0])
+        if ctx.needs_input_grad[1]:
+            grad_w = grad.t().mm(x)                   # mm_mat2_backward (column-major weight.t())
+        if ctx.has_bias and ctx.needs_input_grad[2]:
+            grad_b = grad.sum((0,), keepdim=True).view(-1)  # autograd sum_to(grad, bias.shape)
+        return grad_x, grad_w, grad_b, None
+
+
+def _live_linear(linear, x, segments):
+    if segments is None:
+        return linear(x)
+    if torch.is_grad_enabled():
+        return _LiveRowsLinear.apply(x, linear.weight, linear.bias, segments)
+    return _scatter_live(linear(_gather_live(x, segments)), segments, x.shape[0])
+
+
+def _live_mlp(mlp, x, segments):
+    # Qwen2MLP.forward with the SiLU(gate) * up product fused (bitwise; fused_train_ops.swiglu)
+    if segments is None:
+        return mlp.down_proj(_swiglu(mlp.act_fn, mlp.gate_proj(x), mlp.up_proj(x)))
+    gate = _live_linear(mlp.gate_proj, x, segments)
+    return _live_linear(mlp.down_proj, _swiglu(mlp.act_fn, gate, _live_linear(mlp.up_proj, x, segments)), segments)
 
 
 class Qwen2Config(_Qwen2Config):
@@ -418,13 +487,24 @@ def _static_kv_cache_attention(
 ):
     num_seqs = len(query_lens)
     device = packed_query_states.device
-    cache_batch_idx = _normalize_static_cache_indices(selected_cache_indices, device)
-    cache_indices = cache_batch_idx.long() if cache_batch_idx is not None else torch.arange(num_seqs, device=device)
-    effective_seqlens = (
-        past_key_values.seq_lens[cache_indices]
-        if cache_batch_idx is not None
-        else past_key_values.seq_lens
-    )
+    # The cache indices, gathered cache lengths and cache write positions are the same for every layer of one
+    # forward (no layer writes seq_lens), so they are computed once per forward; Qwen2Model.forward_inference opens
+    # and closes that scope (_forward_prep), so nothing is reused across forwards or graph captures.
+    prep = getattr(past_key_values, '_forward_prep', None)
+    if prep is not None and prep.get('key') is selected_cache_indices and prep.get('device') == device:
+        cache_batch_idx, cache_indices, effective_seqlens = prep['base']
+    else:
+        cache_batch_idx = _normalize_static_cache_indices(selected_cache_indices, device)
+        cache_indices = cache_batch_idx.long() if cache_batch_idx is not None else torch.arange(num_seqs, device=device)
+        effective_seqlens = (
+            past_key_values.seq_lens[cache_indices]
+            if cache_batch_idx is not None
+            else past_key_values.seq_lens
+        )
+        if prep is not None:
+            prep.clear()
+            prep.update(key=selected_cache_indices, device=device,
+                        base=(cache_batch_idx, cache_indices, effective_seqlens))
     meta = _static_kv_host_meta(past_key_values, query_lens, selected_cache_indices)
     if meta['max_total'] > past_key_values.max_len:
         raise RuntimeError(
@@ -460,8 +540,20 @@ def _static_kv_cache_attention(
         layer_idx,
         selected_cache_indices=selected_cache_indices,
     )
-    cu_seqlens_q = torch.nn.functional.pad(torch.cumsum(query_lens, dim=0), (1, 0)).to(torch.int32)
-    cu_seqlens_k = torch.nn.functional.pad(torch.cumsum(total_kv_lens, dim=0), (1, 0)).to(torch.int32)
+    write = prep.get('write') if prep is not None and 'base' in prep else None
+    if write is not None and write[0] is query_lens:
+        _, cu_seqlens_q, cu_seqlens_k, write_rows, write_cols = write
+    else:
+        cu_seqlens_q = torch.nn.functional.pad(torch.cumsum(query_lens, dim=0), (1, 0)).to(torch.int32)
+        cu_seqlens_k = torch.nn.functional.pad(torch.cumsum(total_kv_lens, dim=0), (1, 0)).to(torch.int32)
+        max_new = meta['max_q']
+        write_pos = torch.arange(max_new, device=device).unsqueeze(0).expand(num_seqs, -1)
+        write_mask = write_pos < query_lens.unsqueeze(1)
+        write_batch = cache_indices.unsqueeze(1).expand_as(write_pos)
+        write_cache_pos = effective_seqlens.unsqueeze(1) + write_pos
+        write_rows, write_cols = write_batch[write_mask], write_cache_pos[write_mask]
+        if prep is not None and 'base' in prep:
+            prep['write'] = (query_lens, cu_seqlens_q, cu_seqlens_k, write_rows, write_cols)
     packed_attn_output = flash_attn_varlen_func(
         q=packed_query_states,
         k=merged_k,
@@ -473,13 +565,8 @@ def _static_kv_cache_attention(
         causal=is_causal,
     ).reshape(-1, hidden_size)
 
-    max_new = meta['max_q']
-    write_pos = torch.arange(max_new, device=device).unsqueeze(0).expand(num_seqs, -1)
-    write_mask = write_pos < query_lens.unsqueeze(1)
-    write_batch = cache_indices.unsqueeze(1).expand_as(write_pos)
-    write_cache_pos = effective_seqlens.unsqueeze(1) + write_pos
-    k_cache[write_batch[write_mask], write_cache_pos[write_mask]] = packed_key_states
-    v_cache[write_batch[write_mask], write_cache_pos[write_mask]] = packed_value_states
+    k_cache[write_rows, write_cols] = packed_key_states
+    v_cache[write_rows, write_cols] = packed_value_states
     return packed_attn_output
 
 
@@ -775,7 +862,10 @@ class PackedAttentionMoT(Qwen2Attention):
         packed_und_token_indexes: torch.LongTensor,
         packed_gen_token_indexes: torch.LongTensor,
         ref_forward: Optional[bool] = False,
+        packed_und_live_segments: Optional[tuple] = None,
+        packed_gen_live_segments: Optional[tuple] = None,
     ):
+        und_keep, gen_keep = packed_und_live_segments, packed_gen_live_segments
         packed_query_states = packed_sequence.new_zeros((packed_sequence.shape[0], self.num_heads * self.head_dim))
         packed_key_states = packed_sequence.new_zeros((packed_sequence.shape[0], self.num_key_value_heads * self.head_dim))
         packed_value_states = packed_sequence.new_zeros((packed_sequence.shape[0], self.num_key_value_heads * self.head_dim))
@@ -783,14 +873,14 @@ class PackedAttentionMoT(Qwen2Attention):
         packed_sequence_und = packed_sequence[packed_und_token_indexes]
         packed_sequence_gen = packed_sequence[packed_gen_token_indexes]
 
-        packed_query_states[packed_und_token_indexes] = self.q_proj(packed_sequence_und)
-        packed_query_states[packed_gen_token_indexes] = self.q_proj_moe_gen(packed_sequence_gen)
+        packed_query_states[packed_und_token_indexes] = _live_linear(self.q_proj, packed_sequence_und, und_keep)
+        packed_query_states[packed_gen_token_indexes] = _live_linear(self.q_proj_moe_gen, packed_sequence_gen, gen_keep)
 
-        packed_key_states[packed_und_token_indexes] = self.k_proj(packed_sequence_und)
-        packed_key_states[packed_gen_token_indexes] = self.k_proj_moe_gen(packed_sequence_gen)
+        packed_key_states[packed_und_token_indexes] = _live_linear(self.k_proj, packed_sequence_und, und_keep)
+        packed_key_states[packed_gen_token_indexes] = _live_linear(self.k_proj_moe_gen, packed_sequence_gen, gen_keep)
 
-        packed_value_states[packed_und_token_indexes] = self.v_proj(packed_sequence_und)
-        packed_value_states[packed_gen_token_indexes] = self.v_proj_moe_gen(packed_sequence_gen)
+        packed_value_states[packed_und_token_indexes] = _live_linear(self.v_proj, packed_sequence_und, und_keep)
+        packed_value_states[packed_gen_token_indexes] = _live_linear(self.v_proj_moe_gen, packed_sequence_gen, gen_keep)
 
         packed_query_states = packed_query_states.view(-1, self.num_heads, self.head_dim)
         packed_key_states = packed_key_states.view(-1, self.num_key_value_heads, self.head_dim)
@@ -801,19 +891,19 @@ class PackedAttentionMoT(Qwen2Attention):
         packed_query_states_ = packed_query_states.new_zeros(packed_query_states.shape)
         packed_key_states_ = packed_key_states.new_zeros(packed_key_states.shape)
 
-        packed_query_states_[packed_und_token_indexes] = self.q_norm(packed_query_states[packed_und_token_indexes])
+        packed_query_states_[packed_und_token_indexes] = _rms_norm(self.q_norm, packed_query_states[packed_und_token_indexes])
         if self.config.freeze_und:
             packed_query_states_[packed_und_token_indexes] = packed_query_states_[packed_und_token_indexes].detach()
-        packed_query_states_[packed_gen_token_indexes] = self.q_norm_moe_gen(packed_query_states[packed_gen_token_indexes])
+        packed_query_states_[packed_gen_token_indexes] = _rms_norm(self.q_norm_moe_gen, packed_query_states[packed_gen_token_indexes])
 
-        packed_key_states_[packed_und_token_indexes] = self.k_norm(packed_key_states[packed_und_token_indexes])
+        packed_key_states_[packed_und_token_indexes] = _rms_norm(self.k_norm, packed_key_states[packed_und_token_indexes])
         if self.config.freeze_und:
             packed_key_states_[packed_und_token_indexes] = packed_key_states_[packed_und_token_indexes].detach()
-        packed_key_states_[packed_gen_token_indexes] = self.k_norm_moe_gen(packed_key_states[packed_gen_token_indexes])
+        packed_key_states_[packed_gen_token_indexes] = _rms_norm(self.k_norm_moe_gen, packed_key_states[packed_gen_token_indexes])
 
         packed_cos, packed_sin = packed_position_embeddings
-        packed_query_states_, packed_key_states_ = apply_rotary_pos_emb(
-            packed_query_states_, packed_key_states_, packed_cos, packed_sin, unsqueeze_dim=1
+        packed_query_states_, packed_key_states_ = _apply_rotary(
+            packed_query_states_, packed_key_states_, packed_cos, packed_sin, apply_rotary_pos_emb
         )
 
         if isinstance(attention_mask, List):
@@ -855,10 +945,64 @@ class PackedAttentionMoT(Qwen2Attention):
 
         packed_attn_output = packed_attn_output.transpose(0, 1).reshape(-1, self.num_heads * self.head_dim)
         packed_attn_output_ = packed_attn_output.new_zeros(packed_attn_output.shape)
-        packed_attn_output_[packed_und_token_indexes] = self.o_proj(packed_attn_output[packed_und_token_indexes])
-        packed_attn_output_[packed_gen_token_indexes] = self.o_proj_moe_gen(packed_attn_output[packed_gen_token_indexes])
+        packed_attn_output_[packed_und_token_indexes] = _live_linear(
+            self.o_proj, packed_attn_output[packed_und_token_indexes], und_keep)
+        packed_attn_output_[packed_gen_token_indexes] = _live_linear(
+            self.o_proj_moe_gen, packed_attn_output[packed_gen_token_indexes], gen_keep)
 
         return packed_attn_output_
+
+    def forward_train_split(self, norm_und, norm_gen, sample_lens, attention_mask, rope_und, rope_gen,
+                            packed_und_token_indexes, packed_gen_token_indexes, seq_len,
+                            und_keep=None, gen_keep=None):
+        """forward_train on the split (per-expert) residual layout: takes the und / gen normed rows (packed
+        expert-list order) and returns the und / gen o_proj outputs.  Every value-producing op is the one of
+        forward_train on identically shaped inputs; only the gathers / zero-filled scatter buffers around the
+        per-expert ops are gone.  The q/k/v projection Linear nodes are created first and in forward_train's order
+        (q und, q gen, k und, k gen, v und, v gen), so autograd accumulates their input gradients in the same
+        order."""
+        nh, nkv, hd = self.num_heads, self.num_key_value_heads, self.head_dim
+        q_u = _live_linear(self.q_proj, norm_und, und_keep)
+        q_g = _live_linear(self.q_proj_moe_gen, norm_gen, gen_keep)
+        k_u = _live_linear(self.k_proj, norm_und, und_keep)
+        k_g = _live_linear(self.k_proj_moe_gen, norm_gen, gen_keep)
+        v_u = _live_linear(self.v_proj, norm_und, und_keep)
+        v_g = _live_linear(self.v_proj_moe_gen, norm_gen, gen_keep)
+        packed_value_states = norm_und.new_zeros((seq_len, nkv * hd))
+        packed_value_states[packed_und_token_indexes] = v_u
+        packed_value_states[packed_gen_token_indexes] = v_g
+        packed_value_states = packed_value_states.view(-1, nkv, hd)
+        # q/k norm + RoPE per expert (row-wise ops: identical values to norming/rotating the scattered rows)
+        q_u, k_u = _apply_rotary(_rms_norm(self.q_norm, q_u.view(-1, nh, hd), plus_zero=True),
+                                 _rms_norm(self.k_norm, k_u.view(-1, nkv, hd), plus_zero=True),
+                                 rope_und[0], rope_und[1], apply_rotary_pos_emb)
+        q_g, k_g = _apply_rotary(_rms_norm(self.q_norm_moe_gen, q_g.view(-1, nh, hd), plus_zero=True),
+                                 _rms_norm(self.k_norm_moe_gen, k_g.view(-1, nkv, hd), plus_zero=True),
+                                 rope_gen[0], rope_gen[1], apply_rotary_pos_emb)
+        packed_query_states_ = norm_und.new_zeros((seq_len, nh, hd))
+        packed_query_states_[packed_und_token_indexes] = q_u
+        packed_query_states_[packed_gen_token_indexes] = q_g
+        packed_key_states_ = norm_und.new_zeros((seq_len, nkv, hd))
+        packed_key_states_[packed_und_token_indexes] = k_u
+        packed_key_states_[packed_gen_token_indexes] = k_g
+
+        pad_size = sum(sample_lens) - seq_len
+        packed_query_states_ = pad_sequence(packed_query_states_.permute(1, 0, 2), pad_size)
+        packed_key_states_ = pad_sequence(packed_key_states_.permute(1, 0, 2), pad_size)
+        packed_value_states = pad_sequence(packed_value_states.permute(1, 0, 2), pad_size)
+        packed_attn_output = flex_attention(
+            packed_query_states_.unsqueeze(0),
+            packed_key_states_.unsqueeze(0),
+            packed_value_states.unsqueeze(0),
+            enable_gqa=True,
+            block_mask=attention_mask,
+        )
+        end_index = packed_attn_output.shape[2] - pad_size
+        packed_attn_output = packed_attn_output[0, :, :end_index, :]
+        packed_attn_output = packed_attn_output.transpose(0, 1).reshape(-1, nh * hd)
+        o_u = _live_linear(self.o_proj, packed_attn_output[packed_und_token_indexes], und_keep)
+        o_g = _live_linear(self.o_proj_moe_gen, packed_attn_output[packed_gen_token_indexes], gen_keep)
+        return o_u, o_g
 
     def forward_inference(
         self,
@@ -877,12 +1021,39 @@ class PackedAttentionMoT(Qwen2Attention):
         selected_cache_indices: Optional[List[int]] = None,
         mot_inference_layout=None,
     ):
-        if mode == 'und':
+        roped = False
+        side = fused_ops.concurrent_side(packed_query_sequence) if mode == 'und' else None
+        if side is not None:
+            # k and v projections on a side stream, concurrent with q (same GEMM calls; outputs consumed on the
+            # current stream only after it waits for the side stream; the side stream first waits for the current
+            # one, so a block it reuses later is never still being read).
+            cur = torch.cuda.current_stream()
+            side.wait_stream(cur)
+            with torch.cuda.stream(side):
+                packed_key_states = self.k_proj(packed_query_sequence).view(-1, self.num_key_value_heads, self.head_dim)
+                packed_value_states = self.v_proj(packed_query_sequence).view(-1, self.num_key_value_heads, self.head_dim)
+            packed_query_states = self.q_proj(packed_query_sequence).view(-1, self.num_heads, self.head_dim)
+            cur.wait_stream(side)
+        elif mode == 'und':
             packed_query_states = self.q_proj(packed_query_sequence).view(-1, self.num_heads, self.head_dim)
             packed_key_states = self.k_proj(packed_query_sequence).view(-1, self.num_key_value_heads, self.head_dim)
             packed_value_states = self.v_proj(packed_query_sequence).view(-1, self.num_key_value_heads, self.head_dim)
-            packed_query_states = self.q_norm(packed_query_states)
-            packed_key_states = self.k_norm(packed_key_states)
+        if mode == 'und':
+            fused = None
+            if (fused_ops.ENABLED and isinstance(self.q_norm, Qwen2RMSNorm) and isinstance(self.k_norm, Qwen2RMSNorm)
+                    and self.q_norm.variance_epsilon == self.k_norm.variance_epsilon):
+                # q_norm, k_norm and RoPE in one kernel with the eager rounding and reduction order (bitwise).
+                fused = fused_ops.qk_norm_rope(
+                    packed_query_states, packed_key_states, self.q_norm.weight, self.k_norm.weight,
+                    packed_query_position_embeddings[0], packed_query_position_embeddings[1],
+                    self.q_norm.variance_epsilon,
+                )
+            if fused is not None:
+                packed_query_states, packed_key_states = fused
+                roped = True
+            else:
+                packed_query_states = self.q_norm(packed_query_states)
+                packed_key_states = self.k_norm(packed_key_states)
         elif mode == 'gen' and mot_inference_layout is not None:
             text_count, _, inverse = mot_inference_layout
             packed_query_sequence = packed_query_sequence.to(torch.bfloat16)
@@ -944,10 +1115,11 @@ class PackedAttentionMoT(Qwen2Attention):
             packed_key_states[packed_text_indexes] = self.k_norm(packed_key_states[packed_text_indexes])
             packed_key_states[packed_vae_token_indexes] = self.k_norm_moe_gen(packed_key_states[packed_vae_token_indexes])
 
-        packed_cos, packed_sin = packed_query_position_embeddings
-        packed_query_states, packed_key_states = apply_rotary_pos_emb(
-            packed_query_states, packed_key_states, packed_cos, packed_sin, unsqueeze_dim=1
-        )
+        if not roped:
+            packed_cos, packed_sin = packed_query_position_embeddings
+            packed_query_states, packed_key_states = apply_rotary_pos_emb(
+                packed_query_states, packed_key_states, packed_cos, packed_sin, unsqueeze_dim=1
+            )
 
         packed_query_states = packed_query_states.to(torch.bfloat16)
         packed_key_states = packed_key_states.to(torch.bfloat16)
@@ -1183,12 +1355,38 @@ class Qwen2MoTDecoderLayer(nn.Module):
         packed_und_token_indexes: torch.LongTensor,
         packed_gen_token_indexes: torch.LongTensor,
         ref_forward: Optional[bool] = False,
-    ) -> torch.Tensor:
+        packed_und_live_segments: Optional[tuple] = None,
+        packed_gen_live_segments: Optional[tuple] = None,
+        split_sequence: Optional[tuple] = None,
+        split_rope: Optional[tuple] = None,
+    ):
+        if split_sequence is not None:
+            # split residual layout: (und rows, gen rows) in, (und rows, gen rows) out
+            hu, hg = split_sequence
+            seq_len = packed_und_token_indexes.shape[0] + packed_gen_token_indexes.shape[0]
+            o_u, o_g = self.self_attn.forward_train_split(
+                _rms_norm(self.input_layernorm, hu, plus_zero=True),
+                _rms_norm(self.input_layernorm_moe_gen, hg, plus_zero=True),
+                sample_lens, attention_mask, split_rope[0], split_rope[1],
+                packed_und_token_indexes, packed_gen_token_indexes, seq_len,
+                packed_und_live_segments, packed_gen_live_segments)
+            hu = hu + o_u
+            hg = hg + o_g
+            m_u = _live_mlp(self.mlp, _rms_norm(self.post_attention_layernorm, hu, plus_zero=True),
+                            packed_und_live_segments)
+            m_g = _live_mlp(self.mlp_moe_gen, _rms_norm(self.post_attention_layernorm_moe_gen, hg, plus_zero=True),
+                            packed_gen_live_segments)
+            return hu + m_u, hg + m_g
+        keep_inputs = {}
+        if packed_und_live_segments is not None:
+            keep_inputs.update(packed_und_live_segments=packed_und_live_segments)
+        if packed_gen_live_segments is not None:
+            keep_inputs.update(packed_gen_live_segments=packed_gen_live_segments)
 
         residual = packed_sequence
         packed_sequence_ = packed_sequence.new_zeros(packed_sequence.shape)
-        packed_sequence_[packed_und_token_indexes] = self.input_layernorm(packed_sequence[packed_und_token_indexes])
-        packed_sequence_[packed_gen_token_indexes] = self.input_layernorm_moe_gen(packed_sequence[packed_gen_token_indexes])
+        packed_sequence_[packed_und_token_indexes] = _rms_norm(self.input_layernorm, packed_sequence[packed_und_token_indexes])
+        packed_sequence_[packed_gen_token_indexes] = _rms_norm(self.input_layernorm_moe_gen, packed_sequence[packed_gen_token_indexes])
 
         # Self Attention
         packed_sequence_ = self.self_attn(
@@ -1199,6 +1397,7 @@ class Qwen2MoTDecoderLayer(nn.Module):
             packed_und_token_indexes=packed_und_token_indexes,
             packed_gen_token_indexes=packed_gen_token_indexes,
             ref_forward=ref_forward,
+            **keep_inputs,
         )
         if self.freeze_und:
             packed_sequence_[packed_und_token_indexes] = packed_sequence_[packed_und_token_indexes].detach()
@@ -1207,14 +1406,15 @@ class Qwen2MoTDecoderLayer(nn.Module):
         # Fully Connected
         residual = packed_sequence
         packed_sequence_ = packed_sequence.new_zeros(packed_sequence.shape)
-        packed_sequence_[packed_und_token_indexes] = self.mlp(
-            self.post_attention_layernorm(packed_sequence[packed_und_token_indexes])
+        packed_sequence_[packed_und_token_indexes] = _live_mlp(
+            self.mlp, _rms_norm(self.post_attention_layernorm, packed_sequence[packed_und_token_indexes]), packed_und_live_segments
         )
         if self.freeze_und:
             packed_sequence_[packed_und_token_indexes] = packed_sequence_[packed_und_token_indexes].detach()
     
-        packed_sequence_[packed_gen_token_indexes] = self.mlp_moe_gen(
-            self.post_attention_layernorm_moe_gen(packed_sequence[packed_gen_token_indexes])
+        packed_sequence_[packed_gen_token_indexes] = _live_mlp(
+            self.mlp_moe_gen, _rms_norm(self.post_attention_layernorm_moe_gen, packed_sequence[packed_gen_token_indexes]),
+            packed_gen_live_segments,
         )
         packed_sequence = residual + packed_sequence_
 
@@ -1301,6 +1501,63 @@ class Qwen2MoTDecoderLayer(nn.Module):
 
         packed_query_sequence = residual + packed_query_sequence
         return packed_query_sequence, past_key_values
+
+
+    def forward_inference_und_fused(self, x, delta, query_lens, packed_query_position_embeddings,
+                                    packed_query_indexes, past_key_values, key_values_lens, packed_key_value_indexes,
+                                    update_past_key_values, is_causal, selected_cache_indices):
+        """mode='und' inference layer with fused kernels; same operations and roundings as forward_inference.
+
+        x is the residual stream entering this layer when delta is None; otherwise the stream is x + delta (the
+        previous layer's pending residual add, fused here into the input RMSNorm). Returns the post-attention
+        stream and this layer's MLP output, whose residual add is left to the next layer / the final norm."""
+        if delta is None:
+            h = fused_ops.rms_norm(x, self.input_layernorm.weight, self.input_layernorm.variance_epsilon)
+            if h is None:
+                h = self.input_layernorm(x)
+        else:
+            r = fused_ops.rms_norm(delta, self.input_layernorm.weight, self.input_layernorm.variance_epsilon,
+                                   residual=x)
+            if r is None:
+                x = x + delta
+                h = self.input_layernorm(x)
+            else:
+                h, x = r
+        attn, past_key_values = self.self_attn(
+            packed_query_sequence=h,
+            query_lens=query_lens,
+            packed_query_position_embeddings=packed_query_position_embeddings,
+            packed_query_indexes=packed_query_indexes,
+            past_key_values=past_key_values,
+            key_values_lens=key_values_lens,
+            packed_key_value_indexes=packed_key_value_indexes,
+            update_past_key_values=update_past_key_values,
+            is_causal=is_causal,
+            mode="und",
+            selected_cache_indices=selected_cache_indices,
+        )
+        r = fused_ops.rms_norm(attn, self.post_attention_layernorm.weight,
+                               self.post_attention_layernorm.variance_epsilon, residual=x)
+        if r is None:
+            x = x + attn
+            h = self.post_attention_layernorm(x)
+        else:
+            h, x = r
+        side = fused_ops.concurrent_side(h)
+        if side is not None:
+            cur = torch.cuda.current_stream()
+            side.wait_stream(cur)
+            with torch.cuda.stream(side):
+                up = self.mlp.up_proj(h)
+            gate = self.mlp.gate_proj(h)
+            cur.wait_stream(side)
+        else:
+            gate = self.mlp.gate_proj(h)
+            up = self.mlp.up_proj(h)
+        act = fused_ops.silu_mul(gate, up) if isinstance(self.mlp.act_fn, nn.SiLU) else None
+        if act is None:
+            act = self.mlp.act_fn(gate) * up
+        return x, self.mlp.down_proj(act), past_key_values
 
 
 class Qwen2MoEDecoderLayer(nn.Module):
@@ -1450,6 +1707,8 @@ class Qwen2Model(Qwen2PreTrainedModel):
         packed_und_token_indexes: Optional[torch.LongTensor] = None,
         packed_gen_token_indexes: Optional[torch.LongTensor] = None,
         ref_forward: Optional[bool] = False,
+        packed_und_live_segments: Optional[tuple] = None,
+        packed_gen_live_segments: Optional[tuple] = None,
     ) -> torch.Tensor:
 
         if self.config.freeze_und:
@@ -1471,6 +1730,34 @@ class Qwen2Model(Qwen2PreTrainedModel):
                 packed_gen_token_indexes=packed_gen_token_indexes,
                 ref_forward=ref_forward,
             )
+            if packed_und_live_segments is not None:
+                extra_inputs.update(packed_und_live_segments=packed_und_live_segments)
+            if packed_gen_live_segments is not None:
+                extra_inputs.update(packed_gen_live_segments=packed_gen_live_segments)
+
+        if self.use_moe and self._split_ok(packed_sequence, attention_mask, packed_und_token_indexes,
+                                           packed_gen_token_indexes):
+            # split residual layout (fuse_train): the residual stream is kept as the und / gen expert rows
+            # (exactly the rows every per-expert op of forward_train gathers), so the per-layer gathers and
+            # zero-filled scatter buffers disappear.  Same values; see forward_train_split.
+            hu = packed_sequence[packed_und_token_indexes]
+            hg = packed_sequence[packed_gen_token_indexes]
+            rope_und = (cos[packed_und_token_indexes], sin[packed_und_token_indexes])
+            rope_gen = (cos[packed_gen_token_indexes], sin[packed_gen_token_indexes])
+            for decoder_layer in self.layers:
+                hu, hg = decoder_layer(
+                    packed_sequence=None,
+                    sample_lens=sample_lens,
+                    attention_mask=attention_mask,
+                    packed_position_embeddings=None,
+                    split_sequence=(hu, hg),
+                    split_rope=(rope_und, rope_gen),
+                    **extra_inputs
+                )
+            packed_sequence_ = torch.zeros_like(packed_sequence)
+            packed_sequence_[packed_und_token_indexes] = _rms_norm(self.norm, hu, plus_zero=True)
+            packed_sequence_[packed_gen_token_indexes] = _rms_norm(self.norm_moe_gen, hg, plus_zero=True)
+            return packed_sequence_
 
         for decoder_layer in self.layers:
             packed_sequence = decoder_layer(
@@ -1483,13 +1770,27 @@ class Qwen2Model(Qwen2PreTrainedModel):
 
         if self.use_moe:
             packed_sequence_ = torch.zeros_like(packed_sequence)
-            packed_sequence_[packed_und_token_indexes] = self.norm(packed_sequence[packed_und_token_indexes])
+            packed_sequence_[packed_und_token_indexes] = _rms_norm(self.norm, packed_sequence[packed_und_token_indexes])
             if self.config.freeze_und:
                 packed_sequence_[packed_und_token_indexes] = packed_sequence_[packed_und_token_indexes].detach()
-            packed_sequence_[packed_gen_token_indexes] = self.norm_moe_gen(packed_sequence[packed_gen_token_indexes])
+            packed_sequence_[packed_gen_token_indexes] = _rms_norm(self.norm_moe_gen, packed_sequence[packed_gen_token_indexes])
             return packed_sequence_
         else:
             return self.norm(packed_sequence)
+
+    def _split_ok(self, packed_sequence, attention_mask, und_idx, gen_idx):
+        """The split residual layout is used when every per-expert op takes its fused, bitwise path."""
+        from modeling.bagel import fused_train_ops as _fto
+        if not (_SPLIT_RESIDUAL and _fto._ENABLED) or self.config.freeze_und or isinstance(attention_mask, list):
+            return False
+        inner = [getattr(l, '_checkpoint_wrapped_module', l) for l in self.layers]
+        if not all(isinstance(l, Qwen2MoTDecoderLayer) and isinstance(l.self_attn, PackedAttentionMoT)
+                   and isinstance(l.mlp.act_fn, torch.nn.SiLU) and isinstance(l.mlp_moe_gen.act_fn, torch.nn.SiLU)
+                   for l in inner):
+            return False
+        n_u, n_g = und_idx.shape[0], gen_idx.shape[0]
+        return (packed_sequence.dtype == torch.bfloat16 and packed_sequence.is_cuda and n_u >= 16 and n_g >= 16
+                and packed_sequence.shape[0] == n_u + n_g and bool(self.config.qk_norm))
 
     def forward_inference(
         self,
@@ -1539,28 +1840,75 @@ class Qwen2Model(Qwen2PreTrainedModel):
                         packed_query_sequence = packed_query_sequence[mot_inference_layout[1]]
                         extra_inputs["mot_inference_layout"] = mot_inference_layout
 
-        for decoder_layer in self.layers:
-            actual_layer = getattr(decoder_layer, "_checkpoint_wrapped_module", decoder_layer)
-            packed_query_sequence, past_key_values = actual_layer(
-                packed_query_sequence=packed_query_sequence,
-                query_lens=query_lens,
-                packed_query_position_embeddings=packed_query_position_embeddings,
-                packed_query_indexes=packed_query_indexes,
+        fused = (mot_inference_layout is not None and self._fused_flow_eligible(
+            packed_query_sequence, query_lens, past_key_values, update_past_key_values, is_causal,
+            selected_cache_indices, mot_inference_layout, packed_query_position_embeddings))
+        if fused:
+            # final normalized hidden states in the original token order (fused path ends with the model norm)
+            return BaseNavitOutputWithPast(
+                packed_query_sequence=self._fused_flow_layers(
+                    packed_query_sequence, query_lens, packed_query_position_embeddings, past_key_values,
+                    mot_inference_layout, packed_text_indexes, packed_vae_token_indexes),
                 past_key_values=past_key_values,
-                key_values_lens=key_values_lens,
-                packed_key_value_indexes=packed_key_value_indexes,
-                update_past_key_values=update_past_key_values,
-                is_causal=is_causal,
-                selected_cache_indices=selected_cache_indices,
-                **extra_inputs,
             )
+        static_cache = past_key_values if fused_ops.ENABLED and isinstance(past_key_values, StaticKVCache) else None
+        if static_cache is not None:
+            # Per-forward scope for the layer-invariant cache index/length tensors (_static_kv_cache_attention).
+            static_cache._forward_prep = {}
+        und_fused = (fused_ops.ENABLED and self.use_moe and mode == "und" and mot_inference_layout is None
+                     and self._all_mot_layers())
+        und_pending = None
+        try:
+            for decoder_layer in (self.layers if und_fused else ()):
+                # fused und path: each layer's last residual add is fused into the next RMSNorm
+                actual_layer = getattr(decoder_layer, "_checkpoint_wrapped_module", decoder_layer)
+                packed_query_sequence, und_pending, past_key_values = actual_layer.forward_inference_und_fused(
+                    packed_query_sequence, und_pending,
+                    query_lens=query_lens,
+                    packed_query_position_embeddings=packed_query_position_embeddings,
+                    packed_query_indexes=packed_query_indexes,
+                    past_key_values=past_key_values,
+                    key_values_lens=key_values_lens,
+                    packed_key_value_indexes=packed_key_value_indexes,
+                    update_past_key_values=update_past_key_values,
+                    is_causal=is_causal,
+                    selected_cache_indices=selected_cache_indices,
+                )
+            for decoder_layer in (() if und_fused else self.layers):
+                actual_layer = getattr(decoder_layer, "_checkpoint_wrapped_module", decoder_layer)
+                packed_query_sequence, past_key_values = actual_layer(
+                    packed_query_sequence=packed_query_sequence,
+                    query_lens=query_lens,
+                    packed_query_position_embeddings=packed_query_position_embeddings,
+                    packed_query_indexes=packed_query_indexes,
+                    past_key_values=past_key_values,
+                    key_values_lens=key_values_lens,
+                    packed_key_value_indexes=packed_key_value_indexes,
+                    update_past_key_values=update_past_key_values,
+                    is_causal=is_causal,
+                    selected_cache_indices=selected_cache_indices,
+                    **extra_inputs,
+                )
+        finally:
+            if static_cache is not None:
+                static_cache._forward_prep = None
 
         if mot_inference_layout is not None:
             packed_query_sequence = packed_query_sequence[mot_inference_layout[2]]
 
         if self.use_moe:
             if mode == "und":
-                packed_query_sequence = self.norm(packed_query_sequence)
+                normed = None
+                if und_pending is not None:
+                    normed = fused_ops.rms_norm(und_pending, self.norm.weight, self.norm.variance_epsilon,
+                                                residual=packed_query_sequence)
+                    if normed is None:
+                        packed_query_sequence = packed_query_sequence + und_pending
+                    else:
+                        normed = normed[0]
+                elif fused_ops.ENABLED:
+                    normed = fused_ops.rms_norm(packed_query_sequence, self.norm.weight, self.norm.variance_epsilon)
+                packed_query_sequence = normed if normed is not None else self.norm(packed_query_sequence)
             elif mode == "gen":
                 packed_query_sequence_ = torch.zeros_like(packed_query_sequence)
                 packed_query_sequence_[packed_text_indexes] = self.norm(packed_query_sequence[packed_text_indexes])
@@ -1573,6 +1921,138 @@ class Qwen2Model(Qwen2PreTrainedModel):
             packed_query_sequence=packed_query_sequence,
             past_key_values=past_key_values,
         )
+
+    def _fused_flow_eligible(self, sequence, query_lens, past_key_values, update_past_key_values, is_causal,
+                             selected_cache_indices, layout, position_embeddings):
+        """Fused kernels only for the readonly static-KV image-flow backbone whose eager operations they
+        reproduce bit for bit (expert-sorted MoT layout, bf16 weights/activations, qk-norm, SiLU MLP, and
+        ATen reduction configurations covered by fused_flow)."""
+        from . import fused_flow as ff
+        if not ff.ENABLED:
+            return False
+        cfg = self.config
+        reason = None
+        if (torch.is_grad_enabled() or self.training or not isinstance(past_key_values, StaticKVCache)
+                or update_past_key_values or is_causal or selected_cache_indices is not None):
+            reason = 'mode'
+        elif not (sequence.is_cuda and sequence.dtype == torch.bfloat16 and sequence.is_contiguous()
+                  and sequence.dim() == 2):
+            reason = 'sequence'
+        elif (cfg.layer_module != "Qwen2MoTDecoderLayer" or not cfg.qk_norm or cfg.hidden_act != 'silu'
+              or cfg.hidden_size // cfg.num_attention_heads != 128 or cfg.hidden_size % 512):
+            reason = 'config'
+        else:
+            text_count = layout[0]
+            gen_count = sequence.shape[0] - text_count
+            nh, nkv = cfg.num_attention_heads, cfg.num_key_value_heads
+            cos, sin = position_embeddings
+            if (text_count < 1 or gen_count < 1
+                    or ff.hidden_bw(text_count, cfg.hidden_size) is None
+                    or ff.hidden_bw(gen_count, cfg.hidden_size) is None
+                    or not all(ff.head_ok(rows * heads) for rows in (text_count, gen_count) for heads in (nh, nkv))):
+                reason = 'reduce_config'
+            elif not (cos.dtype == torch.bfloat16 and sin.dtype == torch.bfloat16 and cos.is_contiguous()
+                      and sin.is_contiguous() and tuple(cos.shape) == (sequence.shape[0], 128)):
+                reason = 'rope'
+            else:
+                layer = getattr(self.layers[0], "_checkpoint_wrapped_module", self.layers[0])
+                attn = layer.self_attn
+                weights = (layer.input_layernorm.weight, layer.input_layernorm_moe_gen.weight,
+                           layer.post_attention_layernorm.weight, attn.q_norm.weight, attn.k_norm.weight,
+                           attn.q_proj.weight, attn.q_proj_moe_gen.weight, layer.mlp.gate_proj.weight,
+                           self.norm.weight, self.norm_moe_gen.weight)
+                if not all(w.dtype == torch.bfloat16 and w.is_contiguous() for w in weights):
+                    reason = 'weights'
+        if reason is not None:
+            ff._note_fallback(reason)
+            return False
+        return True
+
+    def _fused_flow_layers(self, h, query_lens, position_embeddings, past_key_values, layout,
+                           packed_text_indexes, packed_vae_token_indexes):
+        """All decoder layers of the eager MoT gen path (expert-sorted residual stream), with the norms, RoPE,
+        concatenations, permutations, K/V merge and SwiGLU elementwise work fused; GEMMs and attention are the
+        same calls on identically laid-out inputs. Returns the sorted residual stream after the last layer."""
+        from . import fused_flow as ff
+        cfg = self.config
+        text_count, _, inverse = layout
+        T = text_count
+        H, nh, nkv, hd = cfg.hidden_size, cfg.num_attention_heads, cfg.num_key_value_heads, 128
+        n = h.shape[0]
+        cos, sin = position_embeddings
+        meta, packing = _static_kv_packing_meta(past_key_values, query_lens, None, h.device)
+        total_kv = meta['sum_total']
+        pending = None
+        for li, decoder_layer in enumerate(self.layers):
+            layer = getattr(decoder_layer, "_checkpoint_wrapped_module", decoder_layer)
+            attn = layer.self_attn
+            # input RMSNorm per expert (after the previous layer's MLP residual add), into one [n, H] buffer
+            x = torch.empty_like(h)
+            if pending is None:
+                ff.rms_rows(h[:T], layer.input_layernorm.weight, layer.input_layernorm.variance_epsilon, y_out=x[:T])
+                ff.rms_rows(h[T:], layer.input_layernorm_moe_gen.weight,
+                            layer.input_layernorm_moe_gen.variance_epsilon, y_out=x[T:])
+            else:
+                hn = torch.empty_like(h)
+                ff.rms_rows(h[:T], layer.input_layernorm.weight, layer.input_layernorm.variance_epsilon,
+                            add=pending[0], h_out=hn[:T], y_out=x[:T])
+                ff.rms_rows(h[T:], layer.input_layernorm_moe_gen.weight,
+                            layer.input_layernorm_moe_gen.variance_epsilon, add=pending[1], h_out=hn[T:],
+                            y_out=x[T:])
+                h = hn
+            xt, xg = x[:T], x[T:]
+            q_t, q_g = attn.q_proj(xt), attn.q_proj_moe_gen(xg)
+            k_t, k_g = attn.k_proj(xt), attn.k_proj_moe_gen(xg)
+            v_t, v_g = attn.v_proj(xt), attn.v_proj_moe_gen(xg)
+            q = torch.empty((n, nh, hd), dtype=torch.bfloat16, device=h.device)
+            ff.head_norm_rope(q_t, q_g, attn.q_norm.weight, attn.q_norm_moe_gen.weight, cos, sin, inverse,
+                              attn.q_norm.variance_epsilon, nh, q)
+            merged_k = torch.empty((total_kv, nkv, hd), dtype=torch.bfloat16, device=h.device)
+            merged_v = torch.empty((total_kv, nkv, hd), dtype=torch.bfloat16, device=h.device)
+            if meta['sum_eff'] > 0:
+                ff.past_copy(past_key_values.key_cache[attn.layer_idx], past_key_values.value_cache[attn.layer_idx],
+                             packing['past_batch'], packing['past_pos'], packing['past_dest'], merged_k, merged_v)
+            ff.head_norm_rope(k_t, k_g, attn.k_norm.weight, attn.k_norm_moe_gen.weight, cos, sin, inverse,
+                              attn.k_norm.variance_epsilon, nkv, merged_k, dest=packing['new_dest'],
+                              vt=v_t, vg=v_g, vout=merged_v)
+            attn_out = flash_attn_varlen_func(
+                q=q, k=merged_k, v=merged_v,
+                cu_seqlens_q=packing['cu_seqlens_q'], cu_seqlens_k=packing['cu_seqlens_k'],
+                max_seqlen_q=meta['max_q'], max_seqlen_k=meta['max_total'], causal=False,
+            ).reshape(-1, H)
+            o_t = attn.o_proj(attn_out[packed_text_indexes])
+            o_g = attn.o_proj_moe_gen(attn_out[packed_vae_token_indexes])
+            # residual add + post-attention RMSNorm per expert (separate outputs, as the eager slices' norms)
+            hn = torch.empty_like(h)
+            yt = torch.empty((T, H), dtype=torch.bfloat16, device=h.device)
+            yg = torch.empty((n - T, H), dtype=torch.bfloat16, device=h.device)
+            ff.rms_rows(h[:T], layer.post_attention_layernorm.weight, layer.post_attention_layernorm.variance_epsilon,
+                        add=o_t, h_out=hn[:T], y_out=yt)
+            ff.rms_rows(h[T:], layer.post_attention_layernorm_moe_gen.weight,
+                        layer.post_attention_layernorm_moe_gen.variance_epsilon, add=o_g, h_out=hn[T:], y_out=yg)
+            h = hn
+            m_t = layer.mlp.down_proj(ff.silu_mul(layer.mlp.gate_proj(yt), layer.mlp.up_proj(yt)))
+            m_g = layer.mlp_moe_gen.down_proj(ff.silu_mul(layer.mlp_moe_gen.gate_proj(yg), layer.mlp_moe_gen.up_proj(yg)))
+            pending = (m_t, m_g)
+        # last residual add + the model's final per-expert norm, stored at the original token positions: the
+        # eager `seq[inverse]`, zeros_like, norm(seq[text_idx]) / norm_moe_gen(seq[vae_idx]) and index_puts
+        # (seq[text_idx] are exactly the sorted rows [:T], seq[vae_idx] the rows [T:]).
+        out = torch.empty_like(h)
+        ff.rms_rows(h[:T], self.norm.weight, self.norm.variance_epsilon, add=pending[0], y_out=out,
+                       write_h=False, out_index=packed_text_indexes)
+        ff.rms_rows(h[T:], self.norm_moe_gen.weight, self.norm_moe_gen.variance_epsilon, add=pending[1],
+                       y_out=out, write_h=False, out_index=packed_vae_token_indexes)
+        ff.stats['fused_forwards'] += 1
+        return out
+
+
+    def _all_mot_layers(self):
+        cached = getattr(self, "_all_mot_layers_cache", None)
+        if cached is None or cached[0] != len(self.layers):
+            ok = all(isinstance(getattr(l, "_checkpoint_wrapped_module", l), Qwen2MoTDecoderLayer) for l in self.layers)
+            cached = (len(self.layers), ok)
+            self._all_mot_layers_cache = cached
+        return cached[1]
 
 
 class Qwen2ForCausalLM(Qwen2PreTrainedModel):
@@ -1626,6 +2106,7 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel):
         packed_und_token_indexes: Optional[torch.LongTensor] = None,
         packed_gen_token_indexes: Optional[torch.LongTensor] = None,
         ref_forward: Optional[bool] = False,
+        **keep_inputs,
     ) -> torch.Tensor:
 
         outputs = self.model(
@@ -1636,6 +2117,7 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel):
             packed_und_token_indexes=packed_und_token_indexes,
             packed_gen_token_indexes=packed_gen_token_indexes,
             ref_forward=ref_forward,
+            **keep_inputs,
         )
         return outputs
 

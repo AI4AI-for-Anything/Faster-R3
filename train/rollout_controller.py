@@ -72,6 +72,20 @@ class RolloutStepResult:
         return return_dict
 
 
+class DeferredAdvantage:
+    """Placeholder for advantages[sample_idx][round_idx] while rewards are still in flight.
+
+    pack_batch stores it exactly where it would have stored the advantage value; fill_deferred_advantages later
+    replaces every placeholder with the very same Python value (same expression, same order), then builds the
+    float32 tensor exactly as _convert_to_tensors does.
+    """
+    __slots__ = ("sample_idx", "round_idx")
+
+    def __init__(self, sample_idx, round_idx):
+        self.sample_idx = sample_idx
+        self.round_idx = round_idx
+
+
 
 class MultiRoundRolloutController:
     FLEX_ATTN_BLOCK_SIZE = 128
@@ -744,12 +758,18 @@ class MultiRoundRolloutController:
             max_cache_len = self.estimate_edit_image_cache_len(input_imgs, edit_operations)
         gen_context = self.init_gen_context(batch_size, multi_seq=True, use_static_cache=use_static_cache, max_cache_len=max_cache_len)
         cfg_img_context = deepcopy(gen_context)
-        cfg_text_context = deepcopy(gen_context)
+        # The text-CFG context is the image-only prefix of the main context: both start from the same empty
+        # cache and run the same RNG-free VAE/ViT prefill on the same images, so its cache is an exact copy of
+        # the main cache taken right after the image update (before the edit text is appended).
+        copy_image_prefix = cfg_text_scale > 1.0 and isinstance(gen_context['past_key_values'], StaticKVCache)
+        cfg_text_context = None if copy_image_prefix else deepcopy(gen_context)
 
         gen_context = self.update_context_image(input_imgs, gen_context, vae=True, vit=True)
+        if copy_image_prefix:
+            cfg_text_context = deepcopy(gen_context)
         gen_context = self.update_context_text(edit_operations, gen_context)
 
-        if cfg_text_scale > 1.0:
+        if cfg_text_scale > 1.0 and not copy_image_prefix:
             cfg_text_context = self.update_context_image(input_imgs, cfg_text_context, vae=True, vit=True)
         if cfg_img_scale > 1.0:
             cfg_img_context = self.update_context_text(edit_operations, cfg_img_context)
@@ -1246,19 +1266,41 @@ class MultiRoundRolloutController:
 
         return data_points_per_round, total_text_grad_tokens, total_image_num
     
-    def pack_iterator(self, data_points_per_round, text_advantages, image_advantages, cfg_interval=(0.4, 1.0)):
+    def pack_iterator(self, data_points_per_round, text_advantages, image_advantages, cfg_interval=(0.4, 1.0),
+                      defer_advantages=False):
         """
         Pack multi-round data points into batches for training.
         Similar to RolloutControllerForMaze.pack_iterator.
 
         text_advantages: List[List[float]], image_advantages: List[List[float]], [sample_idx][round_idx]
+        defer_advantages: pack without advantages; loss_info then holds DeferredAdvantage placeholders that
+            fill_deferred_advantages resolves once the rewards are known.
         """
         for data_points in data_points_per_round:
             if len(data_points):
-                packed_batch, loss_info = self.pack_batch(data_points, 
+                packed_batch, loss_info = self.pack_batch(data_points,
                         text_advantages, image_advantages, "cuda",
-                        cfg_interval=cfg_interval)
+                        cfg_interval=cfg_interval, defer_advantages=defer_advantages)
                 yield packed_batch, loss_info
+
+    @staticmethod
+    def fill_deferred_advantages(loss_info, text_advantages, image_advantages, device="cuda"):
+        """Resolve the placeholders left by pack_batch(defer_advantages=True).
+
+        Each placeholder becomes `advantages[sample_idx][round_idx] if advantages else 0`, the exact expression
+        pack_batch evaluates; literal entries (0 for CFG data) are kept. The list is then converted with the same
+        torch.tensor(..., dtype=torch.float32, device=device) call as _convert_to_tensors, or None when empty.
+        """
+        for key, table in (("text_advantages", text_advantages), ("image_advantages", image_advantages)):
+            slots = loss_info[key]
+            values = [
+                ((table[slot.sample_idx][slot.round_idx] if table else 0)
+                 if isinstance(slot, DeferredAdvantage) else slot)
+                for slot in slots
+            ]
+            if values: loss_info[key] = torch.tensor(values, dtype=torch.float32, device=device)
+            else: loss_info[key] = None
+        return loss_info
 
         
     def init_packed_input(self,):
@@ -1400,6 +1442,24 @@ class MultiRoundRolloutController:
         
         return curr_pos, curr_rope_id
     
+    @staticmethod
+    def _pack_cached(packed_input, kind, image, compute):
+        """Per-pack_batch memo of a deterministic image transform, keyed by the image object.
+
+        Edit-round data points share one PIL input image (the cond, think and CFG copies of
+        every sample), so the identical CPU transform was recomputed for each copy.
+        Callers only copy the cached tensors (torch.stack / torch.cat), never mutate them.
+        """
+        cache = packed_input.get('_transform_cache')
+        if cache is None:
+            return compute()
+        hit = cache.get((kind, id(image)))
+        if hit is not None and hit[0] is image:
+            return hit[1]
+        value = compute()
+        cache[(kind, id(image))] = (image, value)  # holding the image keeps its id unique
+        return value
+
     def _add_vae_image(self, image, packed_input, curr_pos, curr_rope_id):
         """Add VAE processed image to packed input."""
         # Add start of image token
@@ -1409,7 +1469,7 @@ class MultiRoundRolloutController:
         curr_split_len = 1
         
         # Process VAE image
-        vae_image_tensor = self.vae_transform(image)
+        vae_image_tensor = self._pack_cached(packed_input, 'vae', image, lambda: self.vae_transform(image))
         packed_input['_padded_images'].append(vae_image_tensor)  # Temporary storage
         
         H, W = vae_image_tensor.shape[1:]
@@ -1453,12 +1513,16 @@ class MultiRoundRolloutController:
         curr_split_len = 1
         
         # Process VIT image
-        vit_image_tensor = self.vit_transform(image)
-        H_vit, W_vit = vit_image_tensor.shape[1:]
         vit_downsample_factor = self.vit_transform.stride
+
+        def vit_patches():
+            vit_image_tensor = self.vit_transform(image)
+            H_vit, W_vit = vit_image_tensor.shape[1:]
+            return H_vit, W_vit, patchify(vit_image_tensor, vit_downsample_factor)
+
+        H_vit, W_vit, vit_image_tensor = self._pack_cached(packed_input, 'vit', image, vit_patches)
         h_vit, w_vit = H_vit // vit_downsample_factor, W_vit // vit_downsample_factor
-        vit_image_tensor = patchify(vit_image_tensor, vit_downsample_factor)
-        
+
         packed_input['vit_token_seqlens'].append(vit_image_tensor.shape[0])
         packed_input['packed_vit_tokens'].append(vit_image_tensor)
         
@@ -1514,7 +1578,15 @@ class MultiRoundRolloutController:
         
         for i, (noisy_latent, dt, log_prob, timestep, prev_latent) in enumerate(
             zip(latent_list, dt_list, log_prob_list, timestep_list, prev_latent_list)):
-            
+            # dt/timestep are 0-d device scalars that are repeated once per latent token
+            # below; torch.tensor() in _convert_to_tensors would then read every copy back
+            # with its own blocking device-to-host copy (~1k per latent). Read each value
+            # once here: torch.tensor() stores exactly the same float either way.
+            if torch.is_tensor(dt):
+                dt = dt.item()
+            if torch.is_tensor(timestep):
+                timestep = timestep.item()
+
             # Add start of image token
             packed_input['packed_text_ids'].append(self.new_token_ids['start_of_image'])
             packed_input['packed_text_indexes'].append(curr_pos)
@@ -1569,7 +1641,8 @@ class MultiRoundRolloutController:
         
         return curr_pos, curr_rope_id
 
-    def pack_batch(self, current_batch: List[RolloutStepResult], text_advantages=None, image_advantages=None, device="cuda", cfg_interval=(0.4, 1.0)):
+    def pack_batch(self, current_batch: List[RolloutStepResult], text_advantages=None, image_advantages=None, device="cuda", cfg_interval=(0.4, 1.0),
+                   defer_advantages=False):
         """
         Pack a batch of RolloutStepResult into format suitable for Bagel.forward().
         Uses modular add_text, add_image, add_latent functions for cleaner code.
@@ -1583,7 +1656,8 @@ class MultiRoundRolloutController:
         packed_input['_vae_latent_plan'] = []
         packed_input['_packed_noisy_latent_for_loss'] = []
         packed_input['_patchified_vae_latent_shapes_for_loss'] = []
-        
+        packed_input['_transform_cache'] = {}
+
         curr_pos = 0
         noisy_latent_cnt = 0 # for logging how many conditional latents have been added
         noisy_latent_idx = 0 # for logging the index of the noisy latent in noisy latent sequence
@@ -1596,9 +1670,15 @@ class MultiRoundRolloutController:
                 grouped_data[key] = []
             grouped_data[key].append(data_point)
         
+        # Samples that no loss/KL value can depend on: apply_cfg only combines velocities when a
+        # conditional latent has BOTH a cfg-text and a cfg-img copy, so a lone CFG copy (round-0
+        # generate: text copy only) is dead.  The packed layout is kept unchanged (so every
+        # reduction over tokens keeps its shape); the model just skips the dead rows' GEMMs.
+        dead_ranges = []
         # Process all data points
         for (sample_idx, round_idx), data_points in grouped_data.items():    
             num_noisy_latent = 0                    
+            num_cfg_copies = sum(1 for dp in data_points if dp.is_cfg_text or dp.is_cfg_img)
             for data_point in data_points:
                 data_point: RolloutStepResult
                 curr_rope_id = 0
@@ -1606,8 +1686,11 @@ class MultiRoundRolloutController:
 
                 # Get advantage values (only for conditional data)
                 if not (data_point.is_cfg_text or data_point.is_cfg_img):
-                    text_adv = text_advantages[sample_idx][round_idx] if text_advantages else 0
-                    image_adv = image_advantages[sample_idx][round_idx] if image_advantages else 0
+                    if defer_advantages:
+                        text_adv = image_adv = DeferredAdvantage(sample_idx, round_idx)
+                    else:
+                        text_adv = text_advantages[sample_idx][round_idx] if text_advantages else 0
+                        image_adv = image_advantages[sample_idx][round_idx] if image_advantages else 0
                 else:
                     text_adv = image_adv = 0
                 
@@ -1703,13 +1786,19 @@ class MultiRoundRolloutController:
                 )
                 sample_len = curr_pos - sample_start
                 packed_input['sample_lens'].append(sample_len)
+                if (data_point.is_cfg_text or data_point.is_cfg_img) and num_cfg_copies < 2:
+                    dead_ranges.append((sample_start, curr_pos))
             noisy_latent_cnt += num_noisy_latent
         
         # Post-process and convert to tensors
+        del packed_input['_transform_cache']
         packed_input['sequence_length'] = curr_pos
+        live_und, live_gen = self._live_expert_rows(packed_input, dead_ranges, curr_pos)
         
         # Convert lists to tensors
-        self._convert_to_tensors(packed_input, loss_info, device)
+        self._convert_to_tensors(packed_input, loss_info, device, defer_advantages=defer_advantages)
+        packed_input['packed_und_live_segments'] = live_und
+        packed_input['packed_gen_live_segments'] = live_gen
         
         # Process VAE images if any
         self._process_vae_images(packed_input, device)
@@ -1725,7 +1814,31 @@ class MultiRoundRolloutController:
         return packed_input, loss_info
     
 
-    def _convert_to_tensors(self, packed_input, loss_info, device):
+    @staticmethod
+    def _live_expert_rows(packed_input, dead_ranges, seq_len):
+        """(start, end) row segments of the und / gen expert token lists (Bagel.forward order) that lie
+        outside dead samples; None when an expert has no dead rows."""
+        if not dead_ranges:
+            return None, None
+        dead = bytearray(seq_len)
+        for start, end in dead_ranges:
+            dead[start:end] = b'\x01' * (end - start)
+        und_positions = list(packed_input['packed_text_indexes']) + list(packed_input['packed_vit_token_indexes'])
+        gen_positions = packed_input['packed_vae_token_indexes']
+        live = []
+        for positions in (und_positions, gen_positions):
+            segments, start = [], None
+            for j, pos in enumerate(positions):
+                if not dead[pos] and start is None:
+                    start = j
+                elif dead[pos] and start is not None:
+                    segments.append((start, j)); start = None
+            if start is not None:
+                segments.append((start, len(positions)))
+            live.append(None if segments == [(0, len(positions))] or not positions else tuple(segments))
+        return live[0], live[1]
+
+    def _convert_to_tensors(self, packed_input, loss_info, device, defer_advantages=False):
         """Convert lists in packed_input and loss_info to tensors."""
         # text related
         packed_input['packed_text_ids'] = torch.tensor(packed_input['packed_text_ids'], dtype=torch.long, device=device)
@@ -1767,15 +1880,18 @@ class MultiRoundRolloutController:
         # For now, just ensure it's a list or None
         if not packed_input.get('packed_noisy_latent'): packed_input['packed_noisy_latent'] = None
         
-        # Convert loss_info lists to tensors  
-        if loss_info['text_advantages']: loss_info['text_advantages'] = torch.tensor(loss_info['text_advantages'], dtype=torch.float32, device=device)
-        else: loss_info['text_advantages'] = None
+        # Convert loss_info lists to tensors
+        # (deferred: the advantage lists keep their placeholders; fill_deferred_advantages converts them later)
+        if not defer_advantages:
+            if loss_info['text_advantages']: loss_info['text_advantages'] = torch.tensor(loss_info['text_advantages'], dtype=torch.float32, device=device)
+            else: loss_info['text_advantages'] = None
 
         if loss_info['inference_probs']: loss_info['inference_probs'] = torch.tensor(loss_info['inference_probs'], dtype=torch.float32, device=device)
         else: loss_info['inference_probs'] = None
-            
-        if loss_info['image_advantages']: loss_info['image_advantages'] = torch.tensor(loss_info['image_advantages'], dtype=torch.float32, device=device)
-        else: loss_info['image_advantages'] = None
+
+        if not defer_advantages:
+            if loss_info['image_advantages']: loss_info['image_advantages'] = torch.tensor(loss_info['image_advantages'], dtype=torch.float32, device=device)
+            else: loss_info['image_advantages'] = None
             
         if loss_info['dts']: loss_info['dts'] = torch.tensor(loss_info['dts'], dtype=torch.float32, device=device)
         else: loss_info['dts'] = None

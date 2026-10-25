@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="792pt" height="482.4pt" viewBox="0 0 792 482.4" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.10.8, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 482.4 
+L 792 482.4 
+L 792 0 
+L 0 0 
+z
+" style="fill: #ffffff"/>
+  </g>
+  <g id="axes_1">
+   <g id="patch_2">
+    <path d="M 42.768 230.5872 
+L 262.152 230.5872 
+Q 271.656 230.5872 271.656 224.7984 
+L 271.656 91.1736 
+Q 271.656 85.3848 262.152 85.3848 
+L 42.768 85.3848 
+Q 33.264 85.3848 33.264 91.1736 
+L 33.264 224.7984 
+Q 33.264 230.5872 42.768 230.5872 
+z
+" clip-path="url(#pff2d03236f)" style="fill: #faf5f5; stroke: #eadfe0; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_3">
+    <path d="M 288.288 230.5872 
+L 507.672 230.5872 
+Q 517.176 230.5872 517.176 224.7984 
+L 517.176 91.1736 
+Q 517.176 85.3848 507.672 85.3848 
+L 288.288 85.3848 
+Q 278.784 85.3848 278.784 91.1736 
+L 278.784 224.7984 
+Q 278.784 230.5872 288.288 230.5872 
+z
+" clip-path="url(#pff2d03236f)" style="fill: #faf5f5; stroke: #eadfe0; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_4">
+    <path d="M 533.808 230.5872 
+L 753.192 230.5872 
+Q 762.696 230.5872 762.696 224.7984 
+L 762.696 91.1736 
+Q 762.696 85.3848 753.192 85.3848 
+L 533.808 85.3848 
+Q 524.304 85.3848 524.304 91.1736 
+L 524.304 224.7984 
+Q 524.304 230.5872 533.808 230.5872 
+z
+" clip-path="url(#pff2d03236f)" style="fill: #faf5f5; stroke: #eadfe0; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_5">
+    <path d="M 42.768 399.4272 
+L 262.152 399.4272 
+Q 271.656 399.4272 271.656 393.6384 
+L 271.656 260.0136 
+Q 271.656 254.2248 262.152 254.2248 
+L 42.768 254.2248 
+Q 33.264 254.2248 33.264 260.0136 
+L 33.264 393.6384 
+Q 33.264 399.4272 42.768 399.4272 
+z
+" clip-path="url(#pff2d03236f)" style="fill: #faf5f5; stroke: #eadfe0; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_6">
+    <path d="M 288.288 399.4272 
+L 507.672 399.4272 
+Q 517.176 399.4272 517.176 393.6384 
+L 517.176 260.0136 
+Q 517.176 254.2248 507.672 254.2248 
+L 288.288 254.2248 
+Q 278.784 254.2248 278.784 260.0136 
+L 278.784 393.6384 
+Q 278.784 399.4272 288.288 399.4272 
+z
+" clip-path="url(#pff2d03236f)" style="fill: #faf5f5; stroke: #eadfe0; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_7">
+    <path d="M 533.808 399.4272 
+L 753.192 399.4272 
+Q 762.696 399.4272 762.696 393.6384 
+L 762.696 260.0136 
+Q 762.696 254.2248 753.192 254.2248 
+L 533.808 254.2248 
+Q 524.304 254.2248 524.304 260.0136 
+L 524.304 393.6384 
+Q 524.304 399.4272 533.808 399.4272 
+z
+" clip-path="url(#pff2d03236f)" style="fill: #faf5f5; stroke: #eadfe0; stroke-linejoin: miter"/>
+   </g>
+   <g id="text_1">
+    <text style="font-weight: 700; font-size: 20px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #8c0000" x="39.6" y="38.592" transform="rotate(-0 39.6 38.592)">Where the work was removed or overlapped</text>
+   </g>
+   <g id="text_2">
+    <text style="font-weight: 700; font-size: 11.4px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #8c0000" x="51.48" y="115.776" transform="rotate(-0 51.48 115.776)">Reward service</text>
+   </g>
+   <g id="text_3">
+    <text style="font-size: 10.2px; font-family: 'DejaVu Sans'; fill: #292122" transform="translate(51.48 152.470406)">4 CPU threads / worker</text>
+    <text style="font-size: 10.2px; font-family: 'DejaVu Sans'; fill: #292122" transform="translate(51.48 168.542419)">Colour crops loaded in-process</text>
+    <text style="font-size: 10.2px; font-family: 'DejaVu Sans'; fill: #292122" transform="translate(51.48 184.614431)">Same detector, CLIP and scoring</text>
+   </g>
+   <g id="text_4">
+    <text style="font-weight: 700; font-size: 11.4px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #8c0000" x="297" y="115.776" transform="rotate(-0 297 115.776)">Overlap and host path</text>
+   </g>
+   <g id="text_5">
+    <text style="font-size: 10.2px; font-family: 'DejaVu Sans'; fill: #292122" transform="translate(297 152.470406)">Rewards behind packing + forwards</text>
+    <text style="font-size: 10.2px; font-family: 'DejaVu Sans'; fill: #292122" transform="translate(297 168.542419)">Latent scalars read once</text>
+    <text style="font-size: 10.2px; font-family: 'DejaVu Sans'; fill: #292122" transform="translate(297 184.614431)">Shared masks and frozen ViT</text>
+   </g>
+   <g id="text_6">
+    <text style="font-weight: 700; font-size: 11.4px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #8c0000" x="542.52" y="115.776" transform="rotate(-0 542.52 115.776)">Rollout scheduling</text>
+   </g>
+   <g id="text_7">
+    <text style="font-size: 10.2px; font-family: 'DejaVu Sans'; fill: #292122" transform="translate(542.52 152.470406)">Pipelined text host bookkeeping</text>
+    <text style="font-size: 10.2px; font-family: 'DejaVu Sans'; fill: #292122" transform="translate(542.52 168.542419)">Reuse identical edit CFG prefix</text>
+    <text style="font-size: 10.2px; font-family: 'DejaVu Sans'; fill: #292122" transform="translate(542.52 184.614431)">Conditional graph-capture cleanup</text>
+   </g>
+   <g id="text_8">
+    <text style="font-weight: 700; font-size: 11.4px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #8c0000" x="51.48" y="284.616" transform="rotate(-0 51.48 284.616)">Text decode / prefill</text>
+   </g>
+   <g id="text_9">
+    <text style="font-size: 10.2px; font-family: 'DejaVu Sans'; fill: #292122" transform="translate(51.48 321.310406)">Residual add + RMSNorm</text>
+    <text style="font-size: 10.2px; font-family: 'DejaVu Sans'; fill: #292122" transform="translate(51.48 337.382419)">Q/K norm + RoPE; SiLU × up</text>
+    <text style="font-size: 10.2px; font-family: 'DejaVu Sans'; fill: #292122" transform="translate(51.48 353.454431)">Concurrent small projections</text>
+   </g>
+   <g id="text_10">
+    <text style="font-weight: 700; font-size: 11.4px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #8c0000" x="297" y="284.616" transform="rotate(-0 297 284.616)">Image flow</text>
+   </g>
+   <g id="text_11">
+    <text style="font-size: 10.2px; font-family: 'DejaVu Sans'; fill: #292122" transform="translate(297 321.310406)">Norm + expert-order restoration</text>
+    <text style="font-size: 10.2px; font-family: 'DejaVu Sans'; fill: #292122" transform="translate(297 337.382419)">K/V direct to merged cache</text>
+    <text style="font-size: 10.2px; font-family: 'DejaVu Sans'; fill: #292122" transform="translate(297 353.454431)">Early per-branch graph capture</text>
+   </g>
+   <g id="text_12">
+    <text style="font-weight: 700; font-size: 11.4px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #8c0000" x="542.52" y="284.616" transform="rotate(-0 542.52 284.616)">Training forward / backward</text>
+   </g>
+   <g id="text_13">
+    <text style="font-size: 10.2px; font-family: 'DejaVu Sans'; fill: #292122" transform="translate(542.52 321.310406)">Fused norm, SwiGLU and RoPE</text>
+    <text style="font-size: 10.2px; font-family: 'DejaVu Sans'; fill: #292122" transform="translate(542.52 337.382419)">Split expert residual streams</text>
+    <text style="font-size: 10.2px; font-family: 'DejaVu Sans'; fill: #292122" transform="translate(542.52 353.454431)">Skip inactive CFG-row GEMMs</text>
+   </g>
+   <g id="text_14">
+    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #79696b" x="39.6" y="451.044" transform="rotate(-0 39.6 451.044)">Same measured arithmetic, reduction order and RNG consumption; FP32 main weights / Adam, BF16 compute.</text>
+   </g>
+   <g id="text_15">
+    <text style="font-size: 9.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #79696b" x="39.6" y="470.34" transform="rotate(-0 39.6 470.34)">Validated on eight H100 GPUs for 14 deterministic steps. Kernel exactness is tied to the tested PyTorch / Triton versions.</text>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="pff2d03236f">
+   <rect x="0" y="0" width="792" height="482.4"/>
+  </clipPath>
+ </defs>
+</svg>

@@ -11,6 +11,23 @@ and recomputes timing arithmetic from [../validation/h100.json](../validation/h1
 These figures match the English and Chinese README. Optional `R3_FIGURE_PREVIEW_DIR` writes PNG previews outside
 the repository for visual inspection. The four-GPU assets below remain unchanged for the historical report.
 
+## History labels
+
+The history figure uses descriptive labels; these map to the experiment records in `h100.json`:
+
+| Figure label | Record |
+|---|---|
+| Static CUDA graphs | `rwfast_h1_r17` |
+| Overlap + host work | `stack_a_rw` |
+| Before kernel fusion | `stack_b_rw` / `stack_b_total` |
+| Pre-fusion + text | `fuse_decode_1r` |
+| Pre-fusion + training | `fuse_train_1r` |
+| Pre-fusion + image flow | `fuse_flow_1r` |
+| Combined fusions | `fusion_b_r` / `fusion_b_total2` |
+
+The three individual fusion rows each add one fusion group to the same `stack_b` version. They are separate
+experiments, not cumulative stages. The final configuration combines all three groups.
+
 # Historical four-GPU figures
 
 Regenerate the historical figures with `python docs/performance-views/render.py` (matplotlib and numpy, no GPU). The script

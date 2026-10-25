@@ -67,8 +67,8 @@ def history():
     fig.text(.05, .91, 'Eight-GPU milestones, two comparison scopes', color=RED, fontsize=20, weight='bold')
     fig.text(.05, .845, 'Minimum of three paired ratios; each row has its own fresh baseline timings.', color=MUTED)
     names=['rwfast_h1_r17','stack_a_rw','stack_b_rw','fuse_decode_1r','fuse_train_1r','fuse_flow_1r','fusion_b_r']
-    labels=['R17 on H100','Overlap + host work','Stack B','Stack B + text fusion','Stack B + train fusion','Stack B + flow fusion','All three: fusion_b']
-    for ax, ns, ls, title in [(axes[0],names,labels,'Training code only'),(axes[1],['stack_b_total','fusion_b_total2'],['Stack B','fusion_b'],'Total, including reward service')]:
+    labels=['Static CUDA graphs','Overlap + host work','Before kernel fusion','Pre-fusion + text','Pre-fusion + training','Pre-fusion + image flow','Combined fusions']
+    for ax, ns, ls, title in [(axes[0],names,labels,'Training code only'),(axes[1],['stack_b_total','fusion_b_total2'],['Before kernel fusion','Combined fusions'],'Total, including reward service')]:
         vals=[ROWS[n]['timing']['speedup_min_of_ratios'] for n in ns]
         y=np.arange(len(ns))
         ax.barh(y,vals,height=.50,color=[LIGHT]*(len(ns)-1)+[RED],zorder=3)
@@ -76,7 +76,7 @@ def history():
         for i,v in enumerate(vals): ax.text(v+.05,i,f'{v:.3f}×',va='center',fontsize=10,color=INK)
         ax.set_title(title,color=INK,fontsize=11,pad=16); frame(ax)
         ax.set_xlabel('Paired speedup ↑',color=MUTED)
-    fig.text(.05,.08,'Text / train / flow rows are individual additions to Stack B, not a cumulative sequence. All shown candidates passed bitwise checks.',color=MUTED,fontsize=9)
+    fig.text(.05,.08,'Text / training / image-flow fusions were tested separately on the same pre-fusion version, then combined. All passed bitwise checks.',color=MUTED,fontsize=9)
     fig.text(.05,.035,'The older four-GPU 1.47× result is a separate workload configuration and is excluded here.',color=MUTED,fontsize=9.5)
     save(fig,OUT/'h100-history.svg')
 

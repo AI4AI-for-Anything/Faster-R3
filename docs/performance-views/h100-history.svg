@@ -9,7 +9,7 @@
     <dc:format>image/svg+xml</dc:format>
     <dc:creator>
      <cc:Agent>
-      <dc:title>Matplotlib v3.10.8, https://matplotlib.org/</dc:title>
+      <dc:title>Matplotlib v3.9.4, https://matplotlib.org/</dc:title>
      </cc:Agent>
     </dc:creator>
    </cc:Work>
@@ -45,7 +45,7 @@ L 158.4 95.04
      </g>
      <g id="line2d_2"/>
      <g id="text_1">
-      <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #79696b" x="158.4" y="370.598281" transform="rotate(-0 158.4 370.598281)">0.0</text>
+      <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: middle" x="158.4" y="370.598281" transform="rotate(-0 158.4 370.598281)">0.0</text>
      </g>
     </g>
     <g id="xtick_2">
@@ -56,7 +56,7 @@ L 206.515108 95.04
      </g>
      <g id="line2d_4"/>
      <g id="text_2">
-      <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #79696b" x="206.515108" y="370.598281" transform="rotate(-0 206.515108 370.598281)">0.5</text>
+      <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: middle" x="206.515108" y="370.598281" transform="rotate(-0 206.515108 370.598281)">0.5</text>
      </g>
     </g>
     <g id="xtick_3">
@@ -67,7 +67,7 @@ L 254.630216 95.04
      </g>
      <g id="line2d_6"/>
      <g id="text_3">
-      <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #79696b" x="254.630216" y="370.598281" transform="rotate(-0 254.630216 370.598281)">1.0</text>
+      <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: middle" x="254.630216" y="370.598281" transform="rotate(-0 254.630216 370.598281)">1.0</text>
      </g>
     </g>
     <g id="xtick_4">
@@ -78,7 +78,7 @@ L 302.745324 95.04
      </g>
      <g id="line2d_8"/>
      <g id="text_4">
-      <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #79696b" x="302.745324" y="370.598281" transform="rotate(-0 302.745324 370.598281)">1.5</text>
+      <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: middle" x="302.745324" y="370.598281" transform="rotate(-0 302.745324 370.598281)">1.5</text>
      </g>
     </g>
     <g id="xtick_5">
@@ -89,7 +89,7 @@ L 350.860432 95.04
      </g>
      <g id="line2d_10"/>
      <g id="text_5">
-      <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #79696b" x="350.860432" y="370.598281" transform="rotate(-0 350.860432 370.598281)">2.0</text>
+      <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: middle" x="350.860432" y="370.598281" transform="rotate(-0 350.860432 370.598281)">2.0</text>
      </g>
     </g>
     <g id="xtick_6">
@@ -100,54 +100,54 @@ L 398.97554 95.04
      </g>
      <g id="line2d_12"/>
      <g id="text_6">
-      <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #79696b" x="398.97554" y="370.598281" transform="rotate(-0 398.97554 370.598281)">2.5</text>
+      <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: middle" x="398.97554" y="370.598281" transform="rotate(-0 398.97554 370.598281)">2.5</text>
      </g>
     </g>
     <g id="text_7">
-     <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #79696b" x="278.68777" y="385.244219" transform="rotate(-0 278.68777 385.244219)">Paired speedup ↑</text>
+     <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: middle" x="278.68777" y="385.244219" transform="rotate(-0 278.68777 385.244219)">Paired speedup ↑</text>
     </g>
    </g>
    <g id="matplotlib.axis_2">
     <g id="ytick_1">
      <g id="line2d_13"/>
      <g id="text_8">
-      <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: end; fill: #79696b" x="150.4" y="120.063896" transform="rotate(-0 150.4 120.063896)">R17 on H100</text>
+      <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: end" x="150.4" y="120.063896" transform="rotate(-0 150.4 120.063896)">Static CUDA graphs</text>
      </g>
     </g>
     <g id="ytick_2">
      <g id="line2d_14"/>
      <g id="text_9">
-      <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: end; fill: #79696b" x="150.4" y="156.315644" transform="rotate(-0 150.4 156.315644)">Overlap + host work</text>
+      <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: end" x="150.4" y="156.315644" transform="rotate(-0 150.4 156.315644)">Overlap + host work</text>
      </g>
     </g>
     <g id="ytick_3">
      <g id="line2d_15"/>
      <g id="text_10">
-      <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: end; fill: #79696b" x="150.4" y="192.567392" transform="rotate(-0 150.4 192.567392)">Stack B</text>
+      <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: end" x="150.4" y="192.567392" transform="rotate(-0 150.4 192.567392)">Before kernel fusion</text>
      </g>
     </g>
     <g id="ytick_4">
      <g id="line2d_16"/>
      <g id="text_11">
-      <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: end; fill: #79696b" x="150.4" y="228.819141" transform="rotate(-0 150.4 228.819141)">Stack B + text fusion</text>
+      <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: end" x="150.4" y="228.819141" transform="rotate(-0 150.4 228.819141)">Pre-fusion + text</text>
      </g>
     </g>
     <g id="ytick_5">
      <g id="line2d_17"/>
      <g id="text_12">
-      <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: end; fill: #79696b" x="150.4" y="265.070889" transform="rotate(-0 150.4 265.070889)">Stack B + train fusion</text>
+      <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: end" x="150.4" y="265.070889" transform="rotate(-0 150.4 265.070889)">Pre-fusion + training</text>
      </g>
     </g>
     <g id="ytick_6">
      <g id="line2d_18"/>
      <g id="text_13">
-      <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: end; fill: #79696b" x="150.4" y="301.322637" transform="rotate(-0 150.4 301.322637)">Stack B + flow fusion</text>
+      <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: end" x="150.4" y="301.322637" transform="rotate(-0 150.4 301.322637)">Pre-fusion + image flow</text>
      </g>
     </g>
     <g id="ytick_7">
      <g id="line2d_19"/>
      <g id="text_14">
-      <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: end; fill: #79696b" x="150.4" y="337.574385" transform="rotate(-0 150.4 337.574385)">All three: fusion_b</text>
+      <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: end" x="150.4" y="337.574385" transform="rotate(-0 150.4 337.574385)">Combined fusions</text>
      </g>
     </g>
    </g>
@@ -213,28 +213,28 @@ z
 " clip-path="url(#pc24387a663)" style="fill: #8c0000"/>
    </g>
    <g id="text_15">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #292122" x="294.603942" y="118.64413" transform="rotate(-0 294.603942 118.64413)">1.365×</text>
+    <text style="fill: #292122; font: 10px 'DejaVu Sans'; text-anchor: start" x="294.603942" y="118.64413" transform="rotate(-0 294.603942 118.64413)">1.365×</text>
    </g>
    <g id="text_16">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #292122" x="299.808444" y="154.895878" transform="rotate(-0 299.808444 154.895878)">1.419×</text>
+    <text style="fill: #292122; font: 10px 'DejaVu Sans'; text-anchor: start" x="299.808444" y="154.895878" transform="rotate(-0 299.808444 154.895878)">1.419×</text>
    </g>
    <g id="text_17">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #292122" x="299.657632" y="191.147627" transform="rotate(-0 299.657632 191.147627)">1.418×</text>
+    <text style="fill: #292122; font: 10px 'DejaVu Sans'; text-anchor: start" x="299.657632" y="191.147627" transform="rotate(-0 299.657632 191.147627)">1.418×</text>
    </g>
    <g id="text_18">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #292122" x="308.107438" y="227.399375" transform="rotate(-0 308.107438 227.399375)">1.506×</text>
+    <text style="fill: #292122; font: 10px 'DejaVu Sans'; text-anchor: start" x="308.107438" y="227.399375" transform="rotate(-0 308.107438 227.399375)">1.506×</text>
    </g>
    <g id="text_19">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #292122" x="308.102445" y="263.651123" transform="rotate(-0 308.102445 263.651123)">1.506×</text>
+    <text style="fill: #292122; font: 10px 'DejaVu Sans'; text-anchor: start" x="308.102445" y="263.651123" transform="rotate(-0 308.102445 263.651123)">1.506×</text>
    </g>
    <g id="text_20">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #292122" x="316.836505" y="299.902872" transform="rotate(-0 316.836505 299.902872)">1.596×</text>
+    <text style="fill: #292122; font: 10px 'DejaVu Sans'; text-anchor: start" x="316.836505" y="299.902872" transform="rotate(-0 316.836505 299.902872)">1.596×</text>
    </g>
    <g id="text_21">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #292122" x="344.152963" y="336.15462" transform="rotate(-0 344.152963 336.15462)">1.880×</text>
+    <text style="fill: #292122; font: 10px 'DejaVu Sans'; text-anchor: start" x="344.152963" y="336.15462" transform="rotate(-0 344.152963 336.15462)">1.880×</text>
    </g>
    <g id="text_22">
-    <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #292122" x="278.68777" y="79.04" transform="rotate(-0 278.68777 79.04)">Training code only</text>
+    <text style="fill: #292122; font: 11px 'DejaVu Sans'; text-anchor: middle" x="278.68777" y="79.04" transform="rotate(-0 278.68777 79.04)">Training code only</text>
    </g>
   </g>
   <g id="axes_2">
@@ -255,7 +255,7 @@ L 567.859568 95.04
      </g>
      <g id="line2d_21"/>
      <g id="text_23">
-      <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #79696b" x="567.859568" y="370.598281" transform="rotate(-0 567.859568 370.598281)">0.0</text>
+      <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: middle" x="567.859568" y="370.598281" transform="rotate(-0 567.859568 370.598281)">0.0</text>
      </g>
     </g>
     <g id="xtick_8">
@@ -266,7 +266,7 @@ L 606.351655 95.04
      </g>
      <g id="line2d_23"/>
      <g id="text_24">
-      <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #79696b" x="606.351655" y="370.598281" transform="rotate(-0 606.351655 370.598281)">0.5</text>
+      <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: middle" x="606.351655" y="370.598281" transform="rotate(-0 606.351655 370.598281)">0.5</text>
      </g>
     </g>
     <g id="xtick_9">
@@ -277,7 +277,7 @@ L 644.843741 95.04
      </g>
      <g id="line2d_25"/>
      <g id="text_25">
-      <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #79696b" x="644.843741" y="370.598281" transform="rotate(-0 644.843741 370.598281)">1.0</text>
+      <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: middle" x="644.843741" y="370.598281" transform="rotate(-0 644.843741 370.598281)">1.0</text>
      </g>
     </g>
     <g id="xtick_10">
@@ -288,7 +288,7 @@ L 683.335827 95.04
      </g>
      <g id="line2d_27"/>
      <g id="text_26">
-      <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #79696b" x="683.335827" y="370.598281" transform="rotate(-0 683.335827 370.598281)">1.5</text>
+      <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: middle" x="683.335827" y="370.598281" transform="rotate(-0 683.335827 370.598281)">1.5</text>
      </g>
     </g>
     <g id="xtick_11">
@@ -299,7 +299,7 @@ L 721.827914 95.04
      </g>
      <g id="line2d_29"/>
      <g id="text_27">
-      <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #79696b" x="721.827914" y="370.598281" transform="rotate(-0 721.827914 370.598281)">2.0</text>
+      <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: middle" x="721.827914" y="370.598281" transform="rotate(-0 721.827914 370.598281)">2.0</text>
      </g>
     </g>
     <g id="xtick_12">
@@ -310,24 +310,24 @@ L 760.32 95.04
      </g>
      <g id="line2d_31"/>
      <g id="text_28">
-      <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #79696b" x="760.32" y="370.598281" transform="rotate(-0 760.32 370.598281)">2.5</text>
+      <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: middle" x="760.32" y="370.598281" transform="rotate(-0 760.32 370.598281)">2.5</text>
      </g>
     </g>
     <g id="text_29">
-     <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #79696b" x="664.089784" y="385.244219" transform="rotate(-0 664.089784 385.244219)">Paired speedup ↑</text>
+     <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: middle" x="664.089784" y="385.244219" transform="rotate(-0 664.089784 385.244219)">Paired speedup ↑</text>
     </g>
    </g>
    <g id="matplotlib.axis_4">
     <g id="ytick_8">
      <g id="line2d_32"/>
      <g id="text_30">
-      <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: end; fill: #79696b" x="559.859568" y="150.273686" transform="rotate(-0 559.859568 150.273686)">Stack B</text>
+      <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: end" x="559.859568" y="150.273686" transform="rotate(-0 559.859568 150.273686)">Before kernel fusion</text>
      </g>
     </g>
     <g id="ytick_9">
      <g id="line2d_33"/>
      <g id="text_31">
-      <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: end; fill: #79696b" x="559.859568" y="307.364595" transform="rotate(-0 559.859568 307.364595)">fusion_b</text>
+      <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: end" x="559.859568" y="307.364595" transform="rotate(-0 559.859568 307.364595)">Combined fusions</text>
      </g>
     </g>
    </g>
@@ -353,26 +353,26 @@ z
 " clip-path="url(#p9c638d8195)" style="fill: #8c0000"/>
    </g>
    <g id="text_32">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #292122" x="689.744022" y="148.85392" transform="rotate(-0 689.744022 148.85392)">1.533×</text>
+    <text style="fill: #292122; font: 10px 'DejaVu Sans'; text-anchor: start" x="689.744022" y="148.85392" transform="rotate(-0 689.744022 148.85392)">1.533×</text>
    </g>
    <g id="text_33">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #292122" x="732.076742" y="305.94483" transform="rotate(-0 732.076742 305.94483)">2.083×</text>
+    <text style="fill: #292122; font: 10px 'DejaVu Sans'; text-anchor: start" x="732.076742" y="305.94483" transform="rotate(-0 732.076742 305.94483)">2.083×</text>
    </g>
    <g id="text_34">
-    <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #292122" x="664.089784" y="79.04" transform="rotate(-0 664.089784 79.04)">Total, including reward service</text>
+    <text style="fill: #292122; font: 11px 'DejaVu Sans'; text-anchor: middle" x="664.089784" y="79.04" transform="rotate(-0 664.089784 79.04)">Total, including reward service</text>
    </g>
   </g>
   <g id="text_35">
-   <text style="font-weight: 700; font-size: 20px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #8c0000" x="39.6" y="38.88" transform="rotate(-0 39.6 38.88)">Eight-GPU milestones, two comparison scopes</text>
+   <text style="fill: #8c0000; font: 700 20px 'DejaVu Sans'; text-anchor: start" x="39.6" y="38.88" transform="rotate(-0 39.6 38.88)">Eight-GPU milestones, two comparison scopes</text>
   </g>
   <g id="text_36">
-   <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #79696b" x="39.6" y="66.96" transform="rotate(-0 39.6 66.96)">Minimum of three paired ratios; each row has its own fresh baseline timings.</text>
+   <text style="fill: #79696b; font: 11px 'DejaVu Sans'; text-anchor: start" x="39.6" y="66.96" transform="rotate(-0 39.6 66.96)">Minimum of three paired ratios; each row has its own fresh baseline timings.</text>
   </g>
   <g id="text_37">
-   <text style="font-size: 9px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #79696b" x="39.6" y="397.44" transform="rotate(-0 39.6 397.44)">Text / train / flow rows are individual additions to Stack B, not a cumulative sequence. All shown candidates passed bitwise checks.</text>
+   <text style="fill: #79696b; font: 9px 'DejaVu Sans'; text-anchor: start" x="39.6" y="397.44" transform="rotate(-0 39.6 397.44)">Text / training / image-flow fusions were tested separately on the same pre-fusion version, then combined. All passed bitwise checks.</text>
   </g>
   <g id="text_38">
-   <text style="font-size: 9.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #79696b" x="39.6" y="416.88" transform="rotate(-0 39.6 416.88)">The older four-GPU 1.47× result is a separate workload configuration and is excluded here.</text>
+   <text style="fill: #79696b; font: 9.5px 'DejaVu Sans'; text-anchor: start" x="39.6" y="416.88" transform="rotate(-0 39.6 416.88)">The older four-GPU 1.47× result is a separate workload configuration and is excluded here.</text>
   </g>
  </g>
  <defs>

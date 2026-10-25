@@ -2,18 +2,20 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-**2.08× faster R3 Tree-RL steps for BAGEL-7B-MoT on 8 NVIDIA H100 80 GB GPUs, with bitwise-identical records over 14 checked steps, optimized by AI agents.**
+**2.08× faster R3 Tree-RL steps for BAGEL-7B-MoT on 8 NVIDIA H100 GPUs, optimized by AI agents.**
 
 ![Faster-R3: 2.08× total RL-step speedup](docs/performance-views/h100-benchmark.svg)
 
-| Implementation | Seconds per RL step, windows 1 / 2 / 3 ↓ | Minimum paired speedup ↑ |
+| Implementation | Time / RL step (s) ↓ | Speedup ↑ |
 |---|---:|---:|
-| Baseline | 30.73 / 24.72 / 27.91 | 1.00× |
-| **Faster-R3** | **11.99 / 11.87 / 12.20** | **2.0831×** |
+| Baseline | 24.72 | 1.00× |
+| **Faster-R3** | **11.87** | **2.08×** |
 
-The headline **includes the GenEval reward-service execution improvements**. A separate paired measurement with the faster reward configuration on both sides gives **1.8803× for the training code alone**. Both are directly measured; they are not multiplied estimates. Baseline entries above use the faster of baseline A and B in each window.
+The table and chart show window 2, which sets the minimum paired speedup; the baseline is the faster of runs A and B in that window.
 
-Measured on one host with eight H100 GPUs, FSDP2 ZeRO-3, BF16 compute, FP32 main weights and Adam state, group size 16 over policy groups of 4, and the real GenEval reward workers sharing the training GPUs. No precision change or FP8. An RL step comprises rollout, reward and one optimizer update; generate and reflect-and-refine steps alternate. Each timed launch runs 16 steps: 10 warm-up steps, then three two-step windows. The headline is the smallest paired ratio (2.5636 / 2.0831 / 2.2869), not full-training throughput or time to quality.
+**The 2.08× result includes GenEval reward-service execution improvements**; a separate paired measurement with the optimized reward configuration on both sides gives **1.88× for the training code alone**.
+
+Measured in a short benchmark on **8 NVIDIA H100 GPUs (80 GB)** with FSDP2 ZeRO-3, BF16 compute, FP32 main weights and Adam state, and GenEval reward workers sharing the training GPUs. Group size is 16, with policy groups of 4; precision is unchanged and **no FP8** is used.
 
 ## Quick Start
 
@@ -38,7 +40,7 @@ The launcher uses eight ranks, eight shards, an eight-prompt step-0 evaluation f
 
 ## Agent Optimization History
 
-The latest completed tree is **fusion_b**, source commit `1367ad7`. It combines the earlier static CUDA graphs with reward overlap, host-path work and three groups of bit-exact fused kernels.
+The optimizations combine static CUDA graphs, reward overlap, host work, and fused kernels for text, image flow and training. Each milestone below was measured against fresh baselines on the same eight-GPU host. The three fusion groups were tested individually on the same pre-fusion version, then combined in the final configuration.
 
 ![Eight-GPU optimization history with separate comparison scopes](docs/performance-views/h100-history.svg)
 
@@ -59,19 +61,23 @@ The fused reductions reproduce the tested PyTorch reduction order, BF16 rounding
 
 ## Validation
 
-**Bitwise:** `fusion_b_total2` and `fusion_b_r` both passed all recorded comparisons for deterministic steps 0–13 on all eight ranks: training losses/statistics, rewards, advantages, rollout token/image hashes, gradient norms, learning rates, and final parameter/Adam digests. Rank-0 final digest: `7ee0e76bcc53ddd6b5b8d905bb99a861302d2bba9829699f101a43bd99f4d41a`.
+**Numerical check.** Both comparison configurations matched the baseline bit for bit on every recorded item over **14 deterministic steps (0–13) on all eight ranks**: training losses/statistics, rewards, advantages, rollout token/image hashes, gradient norms, learning rates, and final parameter/Adam digests.
 
-**Publication check:** the portable diagnostics were rerun on one H100: 37 training-operator cases and 169 flow cases passed. These supplement the archived eight-rank result; they do not repeat it. [Validation receipt](docs/validation/publication-check.json).
+**Operator checks.** Additional diagnostics on one H100 passed 37 training-operator cases and 169 image-flow cases, supplementing the eight-rank training checks. See the [validation receipt](docs/validation/publication-check.json).
 
-**Timing:** fresh baseline A → candidate → baseline B launches on the same host. Total-run baseline spread was 4.74%; training-code-only spread was 3.51%. Both conservative speedups clear the corresponding `max(1.02, 1 + 2 × spread)` benefit threshold.
+**Timing.** Baseline A → Faster-R3 → baseline B run as independent launches on the same host. Each launch runs 16 steps: 10 warm-up steps, then three two-step windows containing generation and refinement. An RL step includes rollout, reward and one optimizer update. The speedup is the smallest of the three ratios, using the faster baseline in each window.
+
+| Window (steps) | Baseline (s/step) ↓ | Faster-R3 (s/step) ↓ | Paired speedup ↑ |
+|---|---:|---:|---:|
+| 1 (10–11) | 30.73 | 11.99 | 2.5636× |
+| **2 (12–13)** | **24.72** | **11.87** | **2.0831×** |
+| 3 (14–15) | 27.91 | 12.20 | 2.2869× |
+
+The minimum is **2.0831×** for the full configuration and **1.8803×** in the separate training-code comparison. Ratios use unrounded timings; the table rounds times to two decimals.
 
 ![Paired timing for total and training-code-only results](docs/performance-views/h100-paired-timing.svg)
 
-**Acceptance and scope:** the completed bit-exact checks satisfy this release's numerical acceptance criterion. Additional long-training consistency checks are not required. The observed scope is 14 deterministic steps on all eight ranks. Production-mode timing values were not compared numerically. The rank-0 wandb hook recorded empty lists, so evaluation-only metrics were not validated. Memory remains tight; the new eight-GPU result is a speed improvement, not a memory-saving claim. Full judge records, weights, generated images and profiler traces are not bundled. See [the judge and memory table](docs/judge.md).
-
-## Current endpoint
-
-This release publishes the latest completed, directly measured milestone, **2.0831× total / 1.8803× training code alone**. Further scheduling or numerical changes need fresh paired timings and numerical validation. The current release is accepted under the bit-exact criterion.
+**Scope.** Numerical comparisons cover the deterministic steps above. Production-mode timing values and evaluation-only wandb metrics were not compared. The speedup measures short-run RL steps; full-training time and time to quality were not measured. Memory remains close to the device limit. See the [comparison records and acceptance criteria](docs/judge.md) and [memory table](docs/judge.md#memory).
 
 ## More AI4AI-for-Anything projects
 

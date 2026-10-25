@@ -8,8 +8,8 @@
 
 | Implementation | Seconds per RL step, windows 1 / 2 / 3 ↓ | Minimum paired speedup ↑ |
 |---|---:|---:|
-| Upstream + original reward configuration | 30.73 / 24.72 / 27.91 | 1.00× |
-| **Faster-R3 + faster reward configuration** | **11.99 / 11.87 / 12.20** | **2.0831×** |
+| Baseline | 30.73 / 24.72 / 27.91 | 1.00× |
+| **Faster-R3** | **11.99 / 11.87 / 12.20** | **2.0831×** |
 
 The headline **includes the GenEval reward-service execution improvements**. A separate paired measurement with the faster reward configuration on both sides gives **1.8803× for the training code alone**. Both are directly measured; they are not multiplied estimates. Baseline entries above use the faster of baseline A and B in each window.
 
@@ -71,7 +71,7 @@ The fused reductions reproduce the tested PyTorch reduction order, BF16 rounding
 
 ## Current endpoint
 
-This release publishes the latest completed, directly measured milestone, **2.0831× total / 1.8803× training code alone**. It makes no performance-ceiling claim. Further scheduling or numerical changes need fresh paired timings and numerical validation. The current release is accepted under the bit-exact criterion.
+This release publishes the latest completed, directly measured milestone, **2.0831× total / 1.8803× training code alone**. Further scheduling or numerical changes need fresh paired timings and numerical validation. The current release is accepted under the bit-exact criterion.
 
 ## More AI4AI-for-Anything projects
 

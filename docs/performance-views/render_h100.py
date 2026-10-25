@@ -48,7 +48,7 @@ def hero():
     fig.text(.05, .81, 'BAGEL-7B-MoT Tree-RL · 8 × H100 80 GB · GenEval · 14 steps bitwise identical', color=MUTED)
     ax = fig.add_axes([.25, .25, .39, .42])
     ax.barh([1, 0], [baseline, cand], color=[LIGHT, RED], height=.29, zorder=3)
-    ax.set_yticks([1, 0], ['Upstream + original\nreward service', 'Faster-R3 + faster\nreward service'])
+    ax.set_yticks([1, 0], ['Baseline', 'Faster-R3'])
     for y, x in zip([1, 0], [baseline, cand]):
         ax.text(x+.5, y, f'{x:.2f} s', va='center', weight='bold', color=INK)
     ax.set_xlim(0, 30); ax.set_ylim(-.6, 1.6); frame(ax)
